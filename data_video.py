@@ -541,7 +541,7 @@ def ray_condition(K, c2w, H, W, device, flip_flag=None):
     rays_o = c2w[..., :3, 3]                                        # B, V, 3
     rays_o = rays_o[:, :, None].expand_as(rays_d)                   # B, V, HW, 3
     # c2w @ dirctions
-    rays_dxo = torch.cross(rays_o, rays_d)                          # B, V, HW, 3
+    rays_dxo = torch.cross(rays_o, rays_d, dim=-1)                          # B, V, HW, 3
     plucker = torch.cat([rays_dxo, rays_d], dim=-1)
     plucker = plucker.reshape(B, c2w.shape[1], H, W, 6)             # B, V, H, W, 6
     # plucker = plucker.permute(0, 1, 4, 2, 3)
@@ -629,31 +629,33 @@ class RealEstate10K(Dataset):
 class RealEstate10KPose(Dataset):
     def __init__(
             self,
-            root_path,
-            annotation_json,
+            data_dir,
+            video_size,
+            fps, # not considered yet
+            max_num_frames,
+            annotation_json="train.json",
             sample_stride=4,
             minimum_sample_stride=1,
-            sample_n_frames=16,
             relative_pose=False,
             zero_t_first_frame=False,
-            sample_size=[256, 384],
             rescale_fxy=False,
             shuffle_frames=False,
             use_flip=False,
-            return_clip_name=False,
+            # return_clip_name=False,
     ):
-        self.root_path = root_path
+        self.root_path = data_dir
         self.relative_pose = relative_pose
         self.zero_t_first_frame = zero_t_first_frame
         self.sample_stride = sample_stride
         self.minimum_sample_stride = minimum_sample_stride
-        self.sample_n_frames = sample_n_frames
-        self.return_clip_name = return_clip_name
+        self.sample_n_frames = max_num_frames
+        # self.return_clip_name = return_clip_name
+        self.fps = fps
 
-        self.dataset = json.load(open(os.path.join(root_path, annotation_json), 'r'))
+        self.dataset = json.load(open(os.path.join(data_dir, annotation_json), 'r'))
         self.length = len(self.dataset)
 
-        sample_size = tuple(sample_size) if not isinstance(sample_size, int) else (sample_size, sample_size)
+        sample_size = tuple(video_size) if not isinstance(video_size, int) else (video_size, video_size)
         self.sample_size = sample_size
         if use_flip:
             pixel_transforms = [TT.Resize(sample_size),
@@ -728,7 +730,7 @@ class RealEstate10KPose(Dataset):
             perm = np.random.permutation(self.sample_n_frames)
             frame_indices = frame_indices[perm]
 
-        pixel_values = torch.from_numpy(video_reader.get_batch(frame_indices).asnumpy()).permute(0, 3, 1, 2).contiguous()
+        pixel_values = torch.from_numpy(video_reader.get_batch(frame_indices).numpy()).permute(0, 3, 1, 2).contiguous()
         pixel_values = pixel_values / 255.
 
         cam_params = [cam_params[indice] for indice in frame_indices]
@@ -767,6 +769,8 @@ class RealEstate10KPose(Dataset):
         return self.length
 
     def __getitem__(self, idx):
+        decord.bridge.set_bridge("torch")
+
         while True:
             try:
                 video, video_caption, plucker_embedding, flip_flag, clip_name = self.get_batch(idx)
@@ -782,10 +786,13 @@ class RealEstate10KPose(Dataset):
         else:
             for transform in self.pixel_transforms:
                 video = transform(video)
-        if self.return_clip_name:
-            sample = dict(pixel_values=video, text=video_caption, plucker_embedding=plucker_embedding, clip_name=clip_name)
-        else:
-            sample = dict(pixel_values=video, text=video_caption, plucker_embedding=plucker_embedding)
-
+        # if self.return_clip_name:
+        #     sample = dict(pixel_values=video, text=video_caption, plucker_embedding=plucker_embedding, clip_name=clip_name)
+        # else:
+        #     sample = dict(pixel_values=video, text=video_caption, plucker_embedding=plucker_embedding)
+        sample = dict(mp4=video, txt=video_caption, num_frames=self.sample_n_frames, fps=self.fps, plucker_embedding=plucker_embedding)
         return sample
 
+    @classmethod
+    def create_dataset_function(cls, path, args, **kwargs):
+        return cls(data_dir=path, **kwargs)
