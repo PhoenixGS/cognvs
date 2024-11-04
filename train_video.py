@@ -115,7 +115,7 @@ def broad_cast_batch(batch):
     src = global_rank * mp_size
 
     if batch["mp4"] is not None:
-        broadcast_shape = [batch["mp4"].shape, batch["fps"].shape, batch["num_frames"].shape]
+        broadcast_shape = [batch["mp4"].shape, batch["fps"].shape, batch["num_frames"].shape, batch["plucker_embedding"].shape]
     else:
         broadcast_shape = None
 
@@ -126,15 +126,19 @@ def broad_cast_batch(batch):
     mp4_shape = txt[1][0]
     fps_shape = txt[1][1]
     num_frames_shape = txt[1][2]
+    plucker_shape = txt[1][3]
 
     if mpu.get_model_parallel_rank() != 0:
         batch["mp4"] = torch.zeros(mp4_shape, device="cuda")
         batch["fps"] = torch.zeros(fps_shape, device="cuda", dtype=torch.long)
         batch["num_frames"] = torch.zeros(num_frames_shape, device="cuda", dtype=torch.long)
+        batch["plucker_embedding"] = torch.zeros(plucker_shape, device="cuda")
+
 
     torch.distributed.broadcast(batch["mp4"], src=src, group=mpu.get_model_parallel_group())
     torch.distributed.broadcast(batch["fps"], src=src, group=mpu.get_model_parallel_group())
     torch.distributed.broadcast(batch["num_frames"], src=src, group=mpu.get_model_parallel_group())
+    torch.distributed.broadcast(batch["plucker_embedding"], src=src, group=mpu.get_model_parallel_group())
     return batch
 
 
@@ -152,12 +156,13 @@ def forward_step_eval(data_iterator, model, args, timers, only_log_video_latents
                 for j in range(v):
                     txt.append(batch_video["txt"][j][i])
             batch_video["txt"] = txt
+            batch_video["plucker_embedding"] = batch_video["plucker_embedding"].view(-1, *batch_video["plucker_embedding"].shape[2:])
 
         for key in batch_video:
             if isinstance(batch_video[key], torch.Tensor):
                 batch_video[key] = batch_video[key].cuda()
     else:
-        batch_video = {"mp4": None, "fps": None, "num_frames": None, "txt": None}
+        batch_video = {"mp4": None, "fps": None, "num_frames": None, "txt": None, "plucker_embedding": None}
     broad_cast_batch(batch_video)
     if mpu.get_data_parallel_rank() == 0:
         log_video(batch_video, model, args, only_log_video_latents=only_log_video_latents)
@@ -186,7 +191,7 @@ def forward_step(data_iterator, model, args, timers, data_class=None):
                 os.makedirs(args.save, exist_ok=True)
                 OmegaConf.save(config=config, f=os.path.join(args.save, "training_config.yaml"))
     else:
-        batch = {"mp4": None, "fps": None, "num_frames": None, "txt": None}
+        batch = {"mp4": None, "fps": None, "num_frames": None, "txt": None, "plucker_embedding": None}
 
     batch["global_step"] = args.iteration
 

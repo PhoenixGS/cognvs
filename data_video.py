@@ -790,6 +790,9 @@ class RealEstate10KPose(Dataset):
         #     sample = dict(pixel_values=video, text=video_caption, plucker_embedding=plucker_embedding, clip_name=clip_name)
         # else:
         #     sample = dict(pixel_values=video, text=video_caption, plucker_embedding=plucker_embedding)
+        
+        # plucker_embedding to bfloat16
+        plucker_embedding = plucker_embedding.to(torch.bfloat16)
         sample = dict(mp4=video, txt=video_caption, num_frames=self.sample_n_frames, fps=self.fps, plucker_embedding=plucker_embedding)
         return sample
 

@@ -1,7 +1,7 @@
 import math
 from contextlib import nullcontext
 from functools import partial
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Dict, List, Optional, Tuple, Union, Callable, Any
 
 import kornia
 import numpy as np
@@ -9,14 +9,13 @@ import torch
 import torch.nn as nn
 from einops import rearrange, repeat
 from omegaconf import ListConfig
+from diffusers.models.attention_processor import Attention
+from diffusers.models.attention import FeedForward
 from torch.utils.checkpoint import checkpoint
 from transformers import (
     T5EncoderModel,
     T5Tokenizer,
 )
-
-from ..attention import TemporalSelfAttention, FeedForward
-from typing import Dict, Any
 
 from ...util import (
     append_dims,
@@ -390,6 +389,190 @@ class PositionalEncoding(nn.Module):
         x = x + self.pe[:, :x.size(1)]
         return self.dropout(x)
 
+# from CameraCtrl https://github.com/hehao13/CameraCtrl
+import torch.nn.init as init
+class PoseAdaptorAttnProcessor(nn.Module):
+    def __init__(self,
+                 hidden_size,  # dimension of hidden state
+                 pose_feature_dim=None,  # dimension of the pose feature
+                 cross_attention_dim=None,  # dimension of the text embedding
+                 query_condition=False,
+                 key_value_condition=False,
+                 scale=1.0):
+        super().__init__()
+
+        self.hidden_size = hidden_size
+        self.pose_feature_dim = pose_feature_dim
+        self.cross_attention_dim = cross_attention_dim
+        self.scale = scale
+        self.query_condition = query_condition
+        self.key_value_condition = key_value_condition
+        assert hidden_size == pose_feature_dim
+        if self.query_condition and self.key_value_condition:
+            self.qkv_merge = nn.Linear(hidden_size, hidden_size)
+            init.zeros_(self.qkv_merge.weight)
+            init.zeros_(self.qkv_merge.bias)
+        elif self.query_condition:
+            self.q_merge = nn.Linear(hidden_size, hidden_size)
+            init.zeros_(self.q_merge.weight)
+            init.zeros_(self.q_merge.bias)
+        else:
+            self.kv_merge = nn.Linear(hidden_size, hidden_size)
+            init.zeros_(self.kv_merge.weight)
+            init.zeros_(self.kv_merge.bias)
+
+    def forward(self,
+                attn,
+                hidden_states,
+                pose_feature,
+                encoder_hidden_states=None,
+                attention_mask=None,
+                temb=None,
+                scale=None,):
+        assert pose_feature is not None
+        pose_embedding_scale = (scale or self.scale)
+
+        residual = hidden_states
+        # if attn.spatial_norm is not None:
+        #     hidden_states = attn.spatial_norm(hidden_states, temb)
+
+        if hidden_states.dim == 5:
+            hidden_states = rearrange(hidden_states, 'b c f h w -> (b f) (h w) c')
+        elif hidden_states.ndim == 4:
+            hidden_states = rearrange(hidden_states, 'b c h w -> b (h w) c')
+        else:
+            assert hidden_states.ndim == 3
+
+        if self.query_condition and self.key_value_condition:
+            assert encoder_hidden_states is None
+
+        if encoder_hidden_states is None:
+            encoder_hidden_states = hidden_states
+
+        if encoder_hidden_states.ndim == 5:
+            encoder_hidden_states = rearrange(encoder_hidden_states, 'b c f h w -> (b f) (h w) c')
+        elif encoder_hidden_states.ndim == 4:
+            encoder_hidden_states = rearrange(encoder_hidden_states, 'b c h w -> b (h w) c')
+        else:
+            assert encoder_hidden_states.ndim == 3
+        if pose_feature.ndim == 5:
+            pose_feature = rearrange(pose_feature, "b c f h w -> (b f) (h w) c")
+        elif pose_feature.ndim == 4:
+            pose_feature = rearrange(pose_feature, "b c h w -> b (h w) c")
+        else:
+            assert pose_feature.ndim == 3
+
+        batch_size, ehs_sequence_length, _ = encoder_hidden_states.shape
+        attention_mask = attn.prepare_attention_mask(attention_mask, ehs_sequence_length, batch_size)
+
+        if attn.group_norm is not None:
+            hidden_states = attn.group_norm(hidden_states.transpose(1, 2)).transpose(1, 2)
+
+        if attn.norm_cross:
+            encoder_hidden_states = attn.norm_encoder_hidden_states(encoder_hidden_states)
+
+        if self.query_condition and self.key_value_condition:  # only self attention
+            query_hidden_state = self.qkv_merge(hidden_states + pose_feature) * pose_embedding_scale + hidden_states
+            key_value_hidden_state = query_hidden_state
+        elif self.query_condition:
+            query_hidden_state = self.q_merge(hidden_states + pose_feature) * pose_embedding_scale + hidden_states
+            key_value_hidden_state = encoder_hidden_states
+        else:
+            key_value_hidden_state = self.kv_merge(encoder_hidden_states + pose_feature) * pose_embedding_scale + encoder_hidden_states
+            query_hidden_state = hidden_states
+
+        # original attention
+        query = attn.to_q(query_hidden_state)
+        key = attn.to_k(key_value_hidden_state)
+        value = attn.to_v(key_value_hidden_state)
+
+        query = attn.head_to_batch_dim(query)
+        key = attn.head_to_batch_dim(key)
+        value = attn.head_to_batch_dim(value)
+
+        attention_probs = attn.get_attention_scores(query, key, attention_mask)
+        hidden_states = torch.bmm(attention_probs, value)
+        hidden_states = attn.batch_to_head_dim(hidden_states)
+
+        # linear proj
+        hidden_states = attn.to_out[0](hidden_states)
+        # dropout
+        hidden_states = attn.to_out[1](hidden_states)
+
+        if attn.residual_connection:
+            hidden_states = hidden_states + residual
+
+        hidden_states = hidden_states / attn.rescale_output_factor
+
+        return hidden_states
+
+class TemporalSelfAttention(Attention):
+    def __init__(
+            self,
+            attention_mode=None,
+            temporal_position_encoding=False,
+            temporal_position_encoding_max_len=32,
+            rescale_output_factor=1.0,
+            *args, **kwargs
+    ):
+        super().__init__(*args, **kwargs)
+        assert attention_mode == "Temporal_Self"
+
+        self.pos_encoder = PositionalEncoding(
+            kwargs["query_dim"],
+            max_len=temporal_position_encoding_max_len
+        ) if temporal_position_encoding else None
+        self.rescale_output_factor = rescale_output_factor
+
+    def set_use_memory_efficient_attention_xformers(
+            self, use_memory_efficient_attention_xformers: bool, attention_op: Optional[Callable] = None
+    ):
+        # disable motion module efficient xformers to avoid bad results, don't know why
+        # TODO: fix this bug
+        pass
+
+    def forward(self, hidden_states, encoder_hidden_states=None, attention_mask=None, **cross_attention_kwargs):
+        # The `Attention` class can call different attention processors / attention functions
+        # here we simply pass along all tensors to the selected processor class
+        # For standard processors that are defined here, `**cross_attention_kwargs` is empty
+
+        # add position encoding
+        if self.pos_encoder is not None:
+            hidden_states = self.pos_encoder(hidden_states)
+        if "pose_feature" in cross_attention_kwargs:
+            pose_feature = cross_attention_kwargs["pose_feature"]
+            if pose_feature.ndim == 5:
+                pose_feature = rearrange(pose_feature, "b c f h w -> (b h w) f c")
+            else:
+                assert pose_feature.ndim == 3
+            cross_attention_kwargs["pose_feature"] = pose_feature
+
+        if isinstance(self.processor,  PoseAdaptorAttnProcessor):
+            return self.processor(
+                self,
+                hidden_states,
+                cross_attention_kwargs.pop('pose_feature'),
+                encoder_hidden_states=None,
+                attention_mask=attention_mask,
+                **cross_attention_kwargs,
+            )
+        elif hasattr(self.processor, "__call__"):
+            return self.processor.__call__(
+                    self,
+                    hidden_states,
+                    encoder_hidden_states=None,
+                    attention_mask=attention_mask,
+                    **cross_attention_kwargs,
+                )
+        else:
+            return self.processor(
+                self,
+                hidden_states,
+                encoder_hidden_states=None,
+                attention_mask=attention_mask,
+                **cross_attention_kwargs,
+            )
+
 class TemporalTransformerBlock(nn.Module):
     def __init__(
             self,
@@ -460,10 +643,10 @@ class PoseEmbedder(AbstractEmbModel):
 
     def __init__(
         self,
-        downscale_factor,
-        channels=[320, 640, 1280, 1280],
-        nums_rb=3,
-        cin=64, # TODO
+        downscale_factor: int,
+        channels: List[int] =[320, 640, 1280, 1280],
+        nums_rb: int = 3,
+        cin=49,
         compression_factor=1,
         temporal_attention_nhead=8,
         attention_block_types=("Temporal_Self", ),
@@ -497,7 +680,7 @@ class PoseEmbedder(AbstractEmbModel):
                     out_dim = int(channels[i] / compression_factor)
                     conv_layer = ResnetBlock(in_dim, out_dim, down=False, ksize=ksize, sk=sk, use_conv=use_conv)
                 elif j == nums_rb - 1:
-                    in_dim = channels[i] / compression_factor
+                    in_dim = int(channels[i] / compression_factor)
                     out_dim = channels[i]
                     conv_layer = ResnetBlock(in_dim, out_dim, down=False, ksize=ksize, sk=sk, use_conv=use_conv)
                 else:
@@ -542,7 +725,7 @@ class PoseEmbedder(AbstractEmbModel):
     def forward(self, pose_embedding):
         assert pose_embedding.ndim == 5
         bs = pose_embedding.shape[0]
-        pose_embedding_features = self.pose_encoder(pose_embedding)      # bf c h w
+        pose_embedding_features = self.encode(pose_embedding)      # bf c h w
         pose_embedding_features = [rearrange(x, '(b f) c h w -> b c f h w', b=bs)
                                    for x in pose_embedding_features]
-        return pose_embedding_features
+        return pose_embedding_features[-1]
