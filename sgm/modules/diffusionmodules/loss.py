@@ -102,6 +102,7 @@ class VideoDiffusionLoss(StandardDiffusionLoss):
         if "concat_images" in batch.keys():
             cond["concat"] = batch["concat_images"]
 
+        additional_model_inputs["pl_emb"] = cond["pl_emb"]
         # [2, 13, 16, 60, 90],[2] dict_keys(['crossattn', 'concat'])  dict_keys(['idx'])
         model_output = denoiser(network, noised_input, alphas_cumprod_sqrt, cond, **additional_model_inputs)
         w = append_dims(1 / (1 - alphas_cumprod_sqrt**2), input.ndim)  # v-pred

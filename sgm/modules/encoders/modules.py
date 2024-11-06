@@ -73,7 +73,7 @@ class AbstractEmbModel(nn.Module):
 
 
 class GeneralConditioner(nn.Module):
-    OUTPUT_DIM2KEYS = {2: "vector", 3: "crossattn", 4: "concat", 5: "concat"}
+    OUTPUT_DIM2KEYS = {2: "vector", 3: "crossattn", 4: "concat", 5: "pl_emb"}
     KEY2CATDIM = {"vector": 1, "crossattn": 2, "concat": 1}
 
     def __init__(self, emb_models: Union[List, ListConfig], cor_embs=[], cor_p=[]):
@@ -667,6 +667,8 @@ class PoseEmbedder(AbstractEmbModel):
         self.encoder_down_conv_blocks = nn.ModuleList()
         self.encoder_down_attention_blocks = nn.ModuleList()
 
+        self.downsample = Downsample(cin, use_conv=use_conv, dims=3)
+
         for i in range(len(channels)):
             conv_layers = nn.ModuleList()
             temporal_attention_layers = nn.ModuleList()
@@ -707,6 +709,10 @@ class PoseEmbedder(AbstractEmbModel):
         # unshuffle
         bs = x.shape[0]
         x = rearrange(x, "b c f h w -> (b f) c h w")
+
+        # downsample
+        x = self.downsample(x)
+
         # shape of x: batch, c, frames, h, w
         x = self.unshuffle(x)
         # extract features
@@ -729,3 +735,93 @@ class PoseEmbedder(AbstractEmbModel):
         pose_embedding_features = [rearrange(x, '(b f) c h w -> b c f h w', b=bs)
                                    for x in pose_embedding_features]
         return pose_embedding_features[-1]
+    
+class PoseMLPEmbedder(AbstractEmbModel):
+    """
+    Pose Encoder using MLP and Conv
+    [b, in_dim, f, h, w] -> [b, out_dim, f, h / 2, w / 2]
+    f = frames
+    h = video_size[0]
+    w = video_size[1]
+    downsample: (in_dim, h, w) -> (hidden_dim, h / 2, w / 2)
+    # conv1: (in_dim, f, h / 2, w / 2) -> (hidden_dim, f, h / 2, w / 2)
+    mlp1: (hidden_dim) -> (hidden_dim)
+    conv2: (hidden_dim, f, h / 2, w / 2) -> (out_dim, f, h / 2, w / 2)
+    """
+
+    def __init__(
+        self,
+        in_channel: int = 6,
+        out_channel: int = 3072,
+        hidden_dim: int = 768,
+        num_layers: int = 3,
+        frames: int = 49,
+        video_size: Tuple[int, int] = [480, 720],
+        dropout: float = 0.5,
+        device: str = "cuda",
+    ):
+        super().__init__()
+        self.in_channel = in_channel
+        self.out_channel = out_channel
+        self.hidden_dim = hidden_dim
+        self.num_layers = num_layers
+        self.frames = frames
+        self.video_size = video_size
+        self.dropout = dropout
+        self.device = device
+
+        self.downsample = Downsample(in_channel, out_channels=hidden_dim, use_conv=True, dims=3)
+        # self.conv1 = nn.Conv2d(in_channel, hidden_dim, 3, 1, 1)
+
+        # self.mlp1 = nn.ModuleList()
+        # for _ in range(num_layers):
+        #     self.mlp1.append(nn.Sequential(
+        #         nn.Linear(video_size[0] * video_size[1] // 4, video_size[0] * video_size[1] // 4),
+        #         nn.ReLU(),
+        #         nn.Dropout(dropout),
+        #     ))
+
+        self.mlp1 = nn.ModuleList()
+        for _ in range(num_layers):
+            self.mlp1.append(nn.Sequential(
+                nn.Linear(hidden_dim, hidden_dim),
+                nn.ReLU(),
+                nn.Dropout(dropout),
+            ))
+
+        self.conv2 = nn.Conv2d(hidden_dim, out_channel, 3, 1, 1)
+
+    # def from_pretrained(self, model_dir):
+    #     self.downsample = Downsample(self.in_channel, out_channels=self.hidden_dim, use_conv=True, dims=3)
+    #     self.conv1 = nn.Conv2d(self.in_channel, self.hidden_dim, 3, 1, 1)
+    #     self.mlp1 = nn.Sequential(
+    #         nn.Linear(self.video_size[0] * self.video_size[1] // 4, self.video_size[0] * self.video_size[1] // 4),
+    #         nn.ReLU(),
+    #         nn.Linear(self.video_size[0] * self.video_size[1] // 4, self.video_size[0] * self.video_size[1] // 4),
+    #         nn.ReLU(),
+    #     )
+    #     self.conv2 = nn.Conv2d(self.hidden_dim, self.out_channel, 3, 1, 1)
+    #     self.load_state_dict(torch.load(model_dir))
+
+    def forward(self, x):
+        bs = x.shape[0]
+        x = rearrange(x, "b c f h w -> (b f) c h w")
+        x = self.downsample(x)
+        # x = self.conv1(x)
+        # x = rearrange(x, "(b f) c h w -> b c f (h w)", b=bs)
+        x = rearrange(x, "(b f) c h w -> b f h w c", b=bs)
+        x = self.mlp1(x)
+        # x = rearrange(x, "b c f (h w) -> (b f) c h w", h=self.video_size[0] // 2)
+        x = rearrange(x, "b f h w c -> (b f) c h w")
+        x = self.conv2(x)
+        x = rearrange(x, "(b f) c h w -> b c f h w", b=bs)
+        return x
+    
+class PoseIdentityEmbedder(AbstractEmbModel):
+    """Identity Pose Encoder"""
+
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, x):
+        return x
