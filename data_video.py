@@ -581,17 +581,19 @@ class RealEstate10K(Dataset):
 
     def get_batch(self, idx):
         video_reader, video_caption = self.load_video_reader(idx)
+        fps = video_reader.get_avg_fps() 
         total_frames = len(video_reader)
 
         if self.is_image:
             frame_indice = [random.randint(0, total_frames - 1)]
         else:
-            if isinstance(self.sample_stride, int):
-                current_sample_stride = self.sample_stride
-            else:
-                assert len(self.sample_stride) == 2
-                assert (self.sample_stride[0] >= 1) and (self.sample_stride[1] >= self.sample_stride[0])
-                current_sample_stride = random.randint(self.sample_stride[0], self.sample_stride[1])
+            # if isinstance(self.sample_stride, int):
+            #     current_sample_stride = self.sample_stride
+            # else:
+            #     assert len(self.sample_stride) == 2
+            #     assert (self.sample_stride[0] >= 1) and (self.sample_stride[1] >= self.sample_stride[0])
+            #     current_sample_stride = random.randint(self.sample_stride[0], self.sample_stride[1])
+            current_sample_stride = int((fps + 7) / 8)
 
             cropped_length = self.sample_n_frames * current_sample_stride
             start_frame_ind = random.randint(0, max(0, total_frames - cropped_length - 1))
@@ -724,6 +726,7 @@ class RealEstate10KPose(Dataset):
         end_frame_ind = min(start_frame_ind + cropped_length, total_frames)
 
         assert end_frame_ind - start_frame_ind >= self.sample_n_frames
+        # frame_indices = np.linspace(start_frame_ind, end_frame_ind - 1, self.sample_n_frames, dtype=int)
         frame_indices = np.linspace(start_frame_ind, end_frame_ind - 1, self.sample_n_frames, dtype=int)
 
         if self.shuffle_frames:
@@ -793,6 +796,7 @@ class RealEstate10KPose(Dataset):
         
         # plucker_embedding to bfloat16
         plucker_embedding = plucker_embedding.to(torch.bfloat16)
+        # print(f"?????shape of video and plucker_embedding: {video.shape}, {plucker_embedding.shape}")
         sample = dict(mp4=video, txt=video_caption, num_frames=self.sample_n_frames, fps=self.fps, plucker_embedding=plucker_embedding)
         return sample
 

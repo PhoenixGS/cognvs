@@ -45,7 +45,7 @@ class VanillaCFG:
         c_out = dict()
 
         for k in c:
-            if k in ["vector", "crossattn", "concat"]:
+            if k in ["vector", "crossattn", "concat", "pl_emb"]:
                 c_out[k] = torch.cat((uc[k], c[k]), 0)
             else:
                 assert c[k] == uc[k]

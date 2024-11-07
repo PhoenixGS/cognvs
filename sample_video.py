@@ -22,6 +22,7 @@ from torchvision.transforms.functional import center_crop, resize
 from torchvision.transforms import InterpolationMode
 from PIL import Image
 
+from utils import Camera, custom_meshgrid, ray_condition
 
 def read_from_cli():
     cnt = 0
@@ -56,6 +57,8 @@ def get_batch(keys, value_dict, N: Union[List, ListConfig], T=None, device="cuda
         if key == "txt":
             batch["txt"] = np.repeat([value_dict["prompt"]], repeats=math.prod(N)).reshape(N).tolist()
             batch_uc["txt"] = np.repeat([value_dict["negative_prompt"]], repeats=math.prod(N)).reshape(N).tolist()
+        # elif key == "plucker_embedding":
+        #     batch["plucker_embedding"] = value_dict["plucker_embedding"]
         else:
             batch[key] = value_dict[key]
 
@@ -147,8 +150,9 @@ def sampling_main(args, model_cls):
     with torch.no_grad():
         for text, cnt in tqdm(data_iter):
             if args.image2video:
-                text, image_path = text.split("@@")
+                text, pose_path, image_path = text.split("@@")
                 assert os.path.exists(image_path), image_path
+                assert os.path.exists(pose_path), pose_path
                 image = Image.open(image_path).convert("RGB")
                 image = transform(image).unsqueeze(0).to("cuda")
                 image = resize_for_rectangle_crop(image, image_size, reshape_mode="center").unsqueeze(0)
@@ -161,15 +165,38 @@ def sampling_main(args, model_cls):
             else:
                 image = None
 
+            with open(pose_path, "r") as f:
+                poses = f.readlines()
+            poses = [pose.strip().split(' ') for pose in poses[1:]]
+            cam_params = [[float(x) for x in pose] for pose in poses]
+
+            # cam_params = cam_params[:T]
+            cam_params = cam_params[0: T * 4: 4] 
+
+            cam_params = [Camera(cam_param) for cam_param in cam_params]
+            intrinsics = np.asarray([[cam_param.fx * image_size[1],
+                                    cam_param.fy * image_size[0],
+                                    cam_param.cx * image_size[1],
+                                    cam_param.cy * image_size[0]]
+                                    for cam_param in cam_params], dtype=np.float32)
+            intrinsics = torch.as_tensor(intrinsics)[None]                  # [1, n_frame, 4]
+            c2w_poses = np.array([cam_param.c2w_mat for cam_param in cam_params], dtype=np.float32)
+            c2w = torch.as_tensor(c2w_poses)[None]                          # [1, n_frame, 4, 4]
+            flip_flag = torch.zeros(T, dtype=torch.bool, device=c2w.device)
+            plucker_embedding = ray_condition(intrinsics, c2w, image_size[0], image_size[1], device='cpu',
+                                              flip_flag=flip_flag)[0].permute(0, 3, 1, 2).contiguous()
+
             value_dict = {
                 "prompt": text,
                 "negative_prompt": "",
                 "num_frames": torch.tensor(T).unsqueeze(0),
+                "plucker_embedding": plucker_embedding,
             }
 
             batch, batch_uc = get_batch(
                 get_unique_embedder_keys_from_conditioner(model.conditioner), value_dict, num_samples
             )
+            print(f"batch and batch_uc: {batch}, {batch_uc}")
             for key in batch:
                 if isinstance(batch[key], torch.Tensor):
                     print(key, batch[key].shape)
@@ -182,6 +209,7 @@ def sampling_main(args, model_cls):
                 batch_uc=batch_uc,
                 force_uc_zero_embeddings=force_uc_zero_embeddings,
             )
+            print(f"Conditioning: {c.keys()} {uc.keys()}")
 
             for k in c:
                 if not k == "crossattn":

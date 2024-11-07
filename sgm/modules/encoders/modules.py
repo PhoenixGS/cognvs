@@ -73,7 +73,7 @@ class AbstractEmbModel(nn.Module):
 
 
 class GeneralConditioner(nn.Module):
-    OUTPUT_DIM2KEYS = {2: "vector", 3: "crossattn", 4: "concat", 5: "pl_emb"}
+    OUTPUT_DIM2KEYS = {2: "vector", 3: "crossattn", 4: "pl_emb", 5: "pl_emb"}
     KEY2CATDIM = {"vector": 1, "crossattn": 2, "concat": 1}
 
     def __init__(self, emb_models: Union[List, ListConfig], cor_embs=[], cor_p=[]):
@@ -156,13 +156,14 @@ class GeneralConditioner(nn.Module):
         ), f"encoder outputs must be tensors or a sequence, but got {type(emb_out)}"
         if not isinstance(emb_out, (list, tuple)):
             emb_out = [emb_out]
+        # print(f"?? {emb_out[0].shape} {emb_out[0].dtype}")
         for emb in emb_out:
             out_key = self.OUTPUT_DIM2KEYS[emb.dim()]
             if embedder.ucg_rate > 0.0 and embedder.legacy_ucg_val is None:
                 if cond_or_not is None:
                     emb = (
                         expand_dims_like(
-                            torch.bernoulli((1.0 - embedder.ucg_rate) * torch.ones(emb.shape[0], device=emb.device)),
+                            torch.bernoulli((1.0 - embedder.ucg_rate) * torch.ones(emb.shape[0], dtype=emb.dtype, device=emb.device)),
                             emb,
                         )
                         * emb
@@ -175,6 +176,12 @@ class GeneralConditioner(nn.Module):
                         )
                         * emb
                     )
+
+            # print(f"dtype in conditioner: {emb.dtype}")
+            # print(f"shape in conditioner: {emb.shape}")
+            emb = emb.to(torch.bfloat16)
+            # print(f"dtype in conditioner: {emb.dtype}")
+            # print(f"shape in conditioner: {emb.shape}")
             if hasattr(embedder, "input_key") and embedder.input_key in force_zero_embeddings:
                 emb = torch.zeros_like(emb)
             if out_key in output:
@@ -222,8 +229,14 @@ class GeneralConditioner(nn.Module):
         self.cor_embs = []
         self.cor_p = []
 
+        # print(f"?batch_c: {batch_c.keys()} {batch_uc.keys()}")
         c = self(batch_c)
         uc = self(batch_c if batch_uc is None else batch_uc, force_uc_zero_embeddings)
+        # print(f"? condition and unconditional: {c.keys()} {uc.keys()}")
+        # print(f"shape of c['cross_attn']: {c['crossattn'].shape}")
+        # print(f"shape of uc['cross_attn']: {uc['crossattn'].shape}")
+        # print(f"shape of c['pl_emb']: {c['pl_emb'].shape}")
+        # print(f"shape of uc['pl_emb']: {uc['pl_emb'].shape}")
 
         for embedder, rate in zip(self.embedders, ucg_rates):
             embedder.ucg_rate = rate
@@ -820,8 +833,15 @@ class PoseMLPEmbedder(AbstractEmbModel):
 class PoseIdentityEmbedder(AbstractEmbModel):
     """Identity Pose Encoder"""
 
-    def __init__(self):
+    def __init__(
+        self,
+        device: str = "cuda"
+    ):
         super().__init__()
+        self.device = device
 
     def forward(self, x):
-        return x
+        print(f"dtype in PoseIdentity Embedder {x.dtype}")
+        print(f"shape in PoseIdentity Embedder {x.shape}")
+        # (b f c h w)
+        return x.to(self.device)
