@@ -105,6 +105,8 @@ def training_main(args, model_cls, forward_step_function, create_dataset_functio
         args.save = os.path.join(args.save, args.experiment_name)
     torch.distributed.barrier()
 
+    print(f"Model: \n{model}")
+
     # init hook before building deepspeed model and optimizer
     if hooks['init_function'] is not None:
         hooks['init_function'](args, model)
@@ -174,7 +176,6 @@ def training_main(args, model_cls, forward_step_function, create_dataset_functio
 
     return model
 
-
 def setup_model_untrainable_params_and_optimizer(args, model, config_params=None):
     """Setup model and optimizer."""
 
@@ -205,6 +206,56 @@ def setup_model_untrainable_params_and_optimizer(args, model, config_params=None
                     )
         print_rank0('Finished syncing initialized parameters.')
 
+    # 辅助函数，根据字符串路径获取模型的层
+    def get_layer_params(model, layer_path):
+        layer = model
+        for attr in layer_path.split('.'):
+            layer = getattr(layer, attr)  # 递归获取子模块
+        return layer.parameters()
+    
+    from fnmatch import fnmatch
+    # 辅助函数：根据通配符路径获取模型的匹配层参数
+    def get_matching_params(model, pattern):
+        matching_params = []
+        
+        # 递归遍历模型所有子模块
+        def match_layers(module, prefix=''):
+            for name, child in module.named_children():
+                full_name = f"{prefix}.{name}" if prefix else name
+                if fnmatch(full_name, pattern):  # 使用通配符匹配
+                    matching_params.extend([p for p in child.parameters() if p.requires_grad])
+                match_layers(child, full_name)  # 递归遍历子模块
+    
+        match_layers(model)
+        return matching_params
+    optim_param_groups = []
+    specified_params = set()
+    common_params = args.deepspeed_config.get('optimizer',{}).get("common_params", {})
+    for param_name, param_config in args.deepspeed_config.get('optimizer',{}).get('params', {}).items():
+        if param_name == 'others':
+            continue  # 'others' 特殊处理
+        pattern = param_config['layer_pattern']  # 从 YAML 获取层路径
+        layer_params = get_matching_params(model, pattern)
+        optim_param_groups.append({
+            'params':  layer_params,
+            'lr': param_config.get('lr', common_params.get('lr')),
+            'weight_decay': param_config.get('weight_decay', common_params.get('weight_decay')),
+            'betas': param_config.get('betas', common_params.get('betas')),
+            'eps': param_config.get('eps', common_params.get('eps')),
+        })
+        specified_params.update(layer_params)  # 记录已添加的参数
+    others_params = [p for p in model.parameters() if ((p not in specified_params) and p.requires_grad)]
+    if others_params:
+        param_config = args.deepspeed_config.get('optimizer',{}).get('params', {}).get('others', {})
+        optim_param_groups.append({
+            'params': others_params,
+            'lr': param_config.get('lr', common_params.get('lr')),
+            'weight_decay': param_config.get('weight_decay', common_params.get('weight_decay')),
+            'betas': param_config.get('betas', common_params.get('betas')),
+            'eps': param_config.get('eps', common_params.get('eps')),
+        })
+
+
     if args.train_data is not None:
         if args.deepspeed:
             from packaging import version
@@ -216,7 +267,8 @@ def setup_model_untrainable_params_and_optimizer(args, model, config_params=None
                 from functools import partial
                 # split and import 
                 optimizer_callable = getattr(import_module(optimizer_name.rsplit('.', maxsplit=1)[0]), optimizer_name.split('.')[-1])
-                optimizer_callable = partial(optimizer_callable, **args.deepspeed_config.get('optimizer', {}).get('params', {}))
+                # optimizer_callable = partial(optimizer_callable, **args.deepspeed_config.get('optimizer', {}).get('params', {}))
+                optimizer_callable = partial(optimizer_callable, optim_param_groups)
                 print_rank0(f'Using optimizer {optimizer_name} from sat.')
                 del args.deepspeed_config['optimizer']
             else:
@@ -224,7 +276,7 @@ def setup_model_untrainable_params_and_optimizer(args, model, config_params=None
 
             model, optimizer, _, _ = deepspeed.initialize(
                 model=model,
-                model_parameters=param_groups,
+                model_parameters=param_groups, ###????
                 optimizer=optimizer_callable,
                 args=args,
                 mpu=mpu,
@@ -239,7 +291,6 @@ def setup_model_untrainable_params_and_optimizer(args, model, config_params=None
         optimizer = None
 
     return model, optimizer
-
 
 def add_param_by_lr(dic, p, no_weight_decay=False):
     if not hasattr(p, 'lr_scale'):
