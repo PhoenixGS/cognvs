@@ -505,22 +505,13 @@ class VideoDDIMSampler(BaseDiffusionSampler):
 
         if isinstance(scale, torch.Tensor) == False and scale == 1:
             additional_model_inputs["idx"] = x.new_ones([x.shape[0]]) * timestep
-            pl_emb = cond["pl_emb"]
-            B, C, _, H, W = pl_emb.shape
-            pl_emb = torch.concat([torch.zeros(B, C, 3, H, W).to(torch.bfloat16).to(pl_emb.device), pl_emb], dim=2) # TODO: respect CogVideoX
-            pl_emb = torch.stack((torch.zeros_like(pl_emb), pl_emb), dim=0)
-            additional_model_inputs["pl_emb"] = pl_emb
+            additional_model_inputs["pl_emb"] = cond["pl_emb"]
             if scale_emb is not None:
                 additional_model_inputs["scale_emb"] = scale_emb
             denoised = denoiser(x, alpha_cumprod_sqrt, cond, **additional_model_inputs).to(torch.float32)
         else:
             additional_model_inputs["idx"] = torch.cat([x.new_ones([x.shape[0]]) * timestep] * 2)
-            pl_emb = cond["pl_emb"]
-            B, C, _, H, W = pl_emb.shape
-            pl_emb = torch.concat([torch.zeros(B, C, 3, H, W).to(torch.bfloat16).to(pl_emb.device), pl_emb], dim=2) # TODO: respect CogVideoX
-            pl_emb = torch.stack((torch.zeros_like(pl_emb), pl_emb), dim=0)
-            additional_model_inputs["pl_emb"] = pl_emb
-            # additional_model_inputs["pl_emb"] = cond["pl_emb"]
+            additional_model_inputs["pl_emb"] = cond["pl_emb"]
             print(f"? pre denoiser x shape {x.shape}")
             denoised = denoiser(
                 *self.guider.prepare_inputs(x, alpha_cumprod_sqrt, cond, uc), **additional_model_inputs

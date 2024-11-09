@@ -148,20 +148,6 @@ class PL_ImagePatchEmbeddingMixin(BaseMixin):
         nn.init.zeros_(self.pl_proj.weight)
         nn.init.zeros_(self.pl_proj.bias)
 
-class PL_PositionEmbeddingMixin(BaseMixin):
-    def attention_forward(self, hidden_states, mask, **kw_args):
-        attention_forward_default = HOOKS_DEFAULT["attention_forward"]
-        
-        pl_embed = kw_args.get("pl_embed", None)
-        B, N, D = hidden_states.shape
-        B2, N2, D2 = pl_embed.shape
-        assert B == B2, "batch size must be the same"
-        assert D == D2, "number of patches must be the same"
-        assert N >= N2, "number of patches must be larger than that of pl_embed"
-        hidden_states = hidden_states + torch.cat([ torch.zeros(B, N-N2, D).to(hidden_states.device), pl_embed], dim=1)
-
-        return attention_forward_default(hidden_states, mask, **kw_args)
-
 
 def get_3d_sincos_pos_embed(
     embed_dim,
@@ -918,35 +904,3 @@ class DiffusionTransformer(BaseModel):
         kwargs["input_ids"] = kwargs["position_ids"] = kwargs["attention_mask"] = torch.ones((1, 1)).to(x.dtype)
         output = super().forward(**kwargs)[0]
         return output
-
-
-class PLDiffusionTransformer(DiffusionTransformer):
-    def __init__(
-        self,
-        pl_in_channels=6,
-        pl_bias= False,
-        pl_patch_size=(4, 16, 16),
-        **kwargs,
-    ):
-        super().__init__(**kwargs)
-        patch_size = pl_patch_size
-        model_channels = self.hidden_size
-        self.pl_proj = nn.Conv3d(pl_in_channels, model_channels, kernel_size=patch_size, stride=patch_size, bias=pl_bias)
-        nn.init.zeros_(self.pl_proj.weight)
-        if pl_bias:
-            nn.init.zeros_(self.pl_proj.bias)
-
-        self.add_mixin("pl_pos_embed", PL_PositionEmbeddingMixin(), reinit=False)
-
-    def forward(self,x, timesteps=None, context=None, y=None,**kwargs):
-        pl_embed = kwargs.get("pl_emb", None)
-        assert pl_embed is not None, "pl_emb must be provided"
-        if pl_embed.dim() == 4:
-            pl_embed = pl_embed.unsqueeze(0)
-        assert pl_embed.dim() == 5, "pl_emb must be 5d tensor"
-        B, C, F, H, W = pl_embed.shape
-
-        pl_embed = self.pl_proj(pl_embed)
-        pl_embed = rearrange(pl_embed, "b c f h w -> b, (f h w), c ")
-        kwargs["pl_emb"] = torch.cat([torch.zeros(),pl_embed], dim=1)
-        super().forward(x, timesteps=None, context=None, y=None,**kwargs)

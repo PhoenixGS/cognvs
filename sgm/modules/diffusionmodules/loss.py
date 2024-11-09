@@ -103,11 +103,7 @@ class VideoDiffusionLoss(StandardDiffusionLoss):
         if "concat_images" in batch.keys():
             cond["concat"] = batch["concat_images"]
 
-        pl_emb = cond["pl_emb"]
-        B, C, _, H, W = pl_emb.shape
-        pl_emb = torch.concat([torch.zeros(B, C, 3, H, W).to(torch.bfloat16).to(pl_emb.device), pl_emb], dim=2) # TODO: respect CogVideoX
-
-        additional_model_inputs["pl_emb"] = pl_emb
+        additional_model_inputs["pl_emb"] = cond["pl_emb"]
 
 
         print(f"dtype of addtional_model_inputs {additional_model_inputs['pl_emb'].dtype}")
