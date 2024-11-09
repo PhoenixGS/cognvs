@@ -72,6 +72,7 @@ class VideoDiffusionLoss(StandardDiffusionLoss):
 
     def __call__(self, network, denoiser, conditioner, input, batch):
         cond = conditioner(batch)
+        print(f"dtype of cond {cond['pl_emb'].dtype}")
         additional_model_inputs = {key: batch[key] for key in self.batch2model_keys.intersection(batch)}
 
         alphas_cumprod_sqrt, idx = self.sigma_sampler(input.shape[0], return_idx=True)
@@ -102,7 +103,14 @@ class VideoDiffusionLoss(StandardDiffusionLoss):
         if "concat_images" in batch.keys():
             cond["concat"] = batch["concat_images"]
 
-        additional_model_inputs["pl_emb"] = cond["pl_emb"]
+        pl_emb = cond["pl_emb"]
+        B, C, _, H, W = pl_emb.shape
+        pl_emb = torch.concat([torch.zeros(B, C, 3, H, W).to(torch.bfloat16).to(pl_emb.device), pl_emb], dim=2) # TODO: respect CogVideoX
+
+        additional_model_inputs["pl_emb"] = pl_emb
+
+
+        print(f"dtype of addtional_model_inputs {additional_model_inputs['pl_emb'].dtype}")
         # [2, 13, 16, 60, 90],[2] dict_keys(['crossattn', 'concat'])  dict_keys(['idx'])
         model_output = denoiser(network, noised_input, alphas_cumprod_sqrt, cond, **additional_model_inputs)
         w = append_dims(1 / (1 - alphas_cumprod_sqrt**2), input.ndim)  # v-pred

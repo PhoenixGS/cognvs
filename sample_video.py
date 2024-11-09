@@ -143,6 +143,7 @@ def sampling_main(args, model_cls):
         transform = TT.Compose(chained_trainsforms)
 
     sample_func = model.sample
+    print(f"?sampling_num_frames: {args.sampling_num_frames}")
     T, H, W, C, F = args.sampling_num_frames, image_size[0], image_size[1], args.latent_channels, 8
     num_samples = [1]
     force_uc_zero_embeddings = ["txt"]
@@ -171,7 +172,8 @@ def sampling_main(args, model_cls):
             cam_params = [[float(x) for x in pose] for pose in poses]
 
             # cam_params = cam_params[:T]
-            cam_params = cam_params[0: T * 4: 4] 
+            cam_params = cam_params[0: ((T - 1) * 4 + 1) * 3: 3] 
+            assert len(cam_params) == 49
 
             cam_params = [Camera(cam_param) for cam_param in cam_params]
             intrinsics = np.asarray([[cam_param.fx * image_size[1],
@@ -182,10 +184,10 @@ def sampling_main(args, model_cls):
             intrinsics = torch.as_tensor(intrinsics)[None]                  # [1, n_frame, 4]
             c2w_poses = np.array([cam_param.c2w_mat for cam_param in cam_params], dtype=np.float32)
             c2w = torch.as_tensor(c2w_poses)[None]                          # [1, n_frame, 4, 4]
-            flip_flag = torch.zeros(T, dtype=torch.bool, device=c2w.device)
+            flip_flag = torch.zeros((T - 1) * 4 + 1, dtype=torch.bool, device=c2w.device)
             plucker_embedding = ray_condition(intrinsics, c2w, image_size[0], image_size[1], device='cpu',
                                               flip_flag=flip_flag)[0].permute(0, 3, 1, 2).contiguous()
-
+            print(f"shape of plucker_embedding: {plucker_embedding.shape}")
             value_dict = {
                 "prompt": text,
                 "negative_prompt": "",
@@ -196,7 +198,7 @@ def sampling_main(args, model_cls):
             batch, batch_uc = get_batch(
                 get_unique_embedder_keys_from_conditioner(model.conditioner), value_dict, num_samples
             )
-            print(f"batch and batch_uc: {batch}, {batch_uc}")
+            print(f"batch and batch_uc: {batch.keys()}, {batch_uc.keys()}")
             for key in batch:
                 if isinstance(batch[key], torch.Tensor):
                     print(key, batch[key].shape)
@@ -210,11 +212,13 @@ def sampling_main(args, model_cls):
                 force_uc_zero_embeddings=force_uc_zero_embeddings,
             )
             print(f"Conditioning: {c.keys()} {uc.keys()}")
+            print(f"shape of pl_emb: {c['pl_emb'].shape}, {uc['pl_emb'].shape}")
 
             for k in c:
-                if not k == "crossattn":
+                if not k == "crossattn" and not k == "pl_emb":
                     c[k], uc[k] = map(lambda y: y[k][: math.prod(num_samples)].to("cuda"), (c, uc))
 
+            print(f"shape of pl_emb: {c['pl_emb'].shape}, {uc['pl_emb'].shape}")
             if args.image2video and image is not None:
                 c["concat"] = image
                 uc["concat"] = image

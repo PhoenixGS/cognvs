@@ -160,15 +160,34 @@ class GeneralConditioner(nn.Module):
         for emb in emb_out:
             out_key = self.OUTPUT_DIM2KEYS[emb.dim()]
             if embedder.ucg_rate > 0.0 and embedder.legacy_ucg_val is None:
+                assert cond_or_not == None
                 if cond_or_not is None:
+                    if "mask" in output.keys():
+                        mask = output["mask"]
+                    else:
+                        mask = torch.bernoulli((1.0 - embedder.ucg_rate) * torch.ones(emb.shape[0], dtype=emb.dtype, device=emb.device))
+                        output["mask"] = mask
+                    
                     emb = (
                         expand_dims_like(
-                            torch.bernoulli((1.0 - embedder.ucg_rate) * torch.ones(emb.shape[0], dtype=emb.dtype, device=emb.device)),
+                            mask,
                             emb,
                         )
                         * emb
                     )
+                    # emb = (
+                    #     expand_dims_like(
+                    #         torch.bernoulli((1.0 - embedder.ucg_rate) * torch.ones(emb.shape[0], dtype=emb.dtype, device=emb.device)),
+                    #         emb,
+                    #     )
+                    #     * emb
+                    # )
+                    print(f"? ucg with embedder: {embedder.__class__.__name__}")
+                    # print(f"? emb: {emb}")
+                    # print(f"? mask: {expand_dims_like(torch.bernoulli((1.0 - embedder.ucg_rate) * torch.ones(emb.shape[0], dtype=emb.dtype, device=emb.device)), emb,)}")
+                    print(f"mask: {mask}")
                 else:
+                    assert False
                     emb = (
                         expand_dims_like(
                             torch.tensor(1 - cond_or_not, dtype=emb.dtype, device=emb.device),
@@ -196,6 +215,7 @@ class GeneralConditioner(nn.Module):
             force_zero_embeddings = []
 
         if len(self.cor_embs) > 0:
+            assert False
             batch_size = len(batch[list(batch.keys())[0]])
             rand_idx = np.random.choice(len(self.cor_p), size=(batch_size,), p=self.cor_p)
             for emb_idx in self.cor_embs:

@@ -59,6 +59,109 @@ class ImagePatchEmbeddingMixin(BaseMixin):
         nn.init.constant_(self.proj.bias, 0)
         del self.transformer.word_embeddings
 
+class PL_ImagePatchEmbeddingMixin(BaseMixin):
+    def __init__(
+        self,
+        in_channels,
+        hidden_size,
+        patch_size,
+        bias=True,
+        text_hidden_size=None,
+        pl_in_channels=None,
+        pl_out_channels=None,
+        pl_patch_size=(4, 16, 16),
+    ):
+        super().__init__()
+        self.proj = nn.Conv2d(in_channels, hidden_size, kernel_size=patch_size, stride=patch_size, bias=bias)
+        if text_hidden_size is not None:
+            self.text_proj = nn.Linear(text_hidden_size, hidden_size)
+        else:
+            self.text_proj = None
+
+        self.pl_proj = nn.Conv3d(pl_in_channels, pl_out_channels, kernel_size=pl_patch_size, stride=pl_patch_size, bias=True, dtype=torch.bfloat16)
+        nn.init.zeros_(self.pl_proj.weight)
+        nn.init.zeros_(self.pl_proj.bias)
+
+
+    def word_embedding_forward(self, input_ids, **kwargs):
+        # now is 3d patch
+        print(f"?kargs: {kwargs.keys()}")
+        images = kwargs["images"]  # (b,t,c,h,w)
+        B, T = images.shape[:2]
+        # print(f"shape of images: {images.shape}")
+        emb = images.view(-1, *images.shape[2:])
+        # print(f"shape of emb: {emb.shape}")
+        emb = self.proj(emb)  # ((b t),d,h/2,w/2)
+        
+
+        pl_emb = kwargs.get("pl_emb", None)
+        print(f"?shape of pl_emb: {pl_emb.shape}")
+        assert pl_emb is not None, "pl_emb must be provided"
+        assert pl_emb.dim() == 4 or pl_emb.dim() == 5, "pl_emb must be 4d or 5d tensor"
+        if pl_emb.dim() == 5:
+            pl_emb = rearrange(pl_emb, "b f c h w -> b c f h w")
+            # B, C=6, F, H, W
+            B,C,_,H,W = pl_emb.shape
+            pl_emb = torch.concat([torch.zeros(B, C, 3, H, W).to(torch.bfloat16).to(pl_emb.device), pl_emb], dim=2) # TODO: respect CogVideoX
+            pl_emb = self.pl_proj(pl_emb)
+            # B, C', F/4, H/8, W/8
+            pl_emb = rearrange(pl_emb, "b c f h w -> (b f) c h w")
+        else:
+            pl_emb = rearrange(pl_emb, "f c h w -> c f h w")
+            C, _, H, W = pl_emb.shape
+            pl_emb = torch.concat([torch.zeros(C, 3, H, W).to(torch.bfloat16).to(pl_emb.device), pl_emb], dim=1)
+            pl_emb = self.pl_proj(pl_emb)
+            pl_emb = torch.concat([torch.zeros_like(pl_emb), pl_emb], dim=1)
+            pl_emb = rearrange(pl_emb, "c f h w -> f c h w")
+        
+        print(f"?emb shape: {emb.shape}, pl_emb shape: {pl_emb.shape}")
+        assert emb.shape == pl_emb.shape, "image and pl emb must have the same shape"
+        emb = emb + pl_emb
+
+        emb = emb.view(B, T, *emb.shape[1:])
+        emb = emb.flatten(3).transpose(2, 3)  # (b,t,n,d)
+        emb = rearrange(emb, "b t n d -> b (t n) d")
+
+        if self.text_proj is not None:
+            text_emb = self.text_proj(kwargs["encoder_outputs"])
+            emb = torch.cat((text_emb, emb), dim=1)  # (b,n_t+t*n_i,d)
+
+        emb = emb.contiguous()
+        return emb  # (b,n_t+t*n_i,d)
+
+    # def reinit(self, parent_model=None):
+    #     w = self.proj.weight.data
+    #     nn.init.xavier_uniform_(w.view([w.shape[0], -1]))
+    #     nn.init.constant_(self.proj.bias, 0)
+    #     del self.transformer.word_embeddings
+
+    def reinit(self, parent_model=None):
+        w = self.proj.weight.data
+        nn.init.xavier_uniform_(w.view([w.shape[0], -1]))
+        nn.init.constant_(self.proj.bias, 0)
+        del self.transformer.word_embeddings
+
+        # reinit pl_proj
+        w2 = self.pl_proj.weight.data
+        # nn.init.xavier_uniform_(w2.view([w2.shape[0], -1]))
+        # nn.init.constant_(self.pl_proj.bias, 0)
+        nn.init.zeros_(self.pl_proj.weight)
+        nn.init.zeros_(self.pl_proj.bias)
+
+class PL_PositionEmbeddingMixin(BaseMixin):
+    def attention_forward(self, hidden_states, mask, **kw_args):
+        attention_forward_default = HOOKS_DEFAULT["attention_forward"]
+        
+        pl_embed = kw_args.get("pl_embed", None)
+        B, N, D = hidden_states.shape
+        B2, N2, D2 = pl_embed.shape
+        assert B == B2, "batch size must be the same"
+        assert D == D2, "number of patches must be the same"
+        assert N >= N2, "number of patches must be larger than that of pl_embed"
+        hidden_states = hidden_states + torch.cat([ torch.zeros(B, N-N2, D).to(hidden_states.device), pl_embed], dim=1)
+
+        return attention_forward_default(hidden_states, mask, **kw_args)
+
 
 def get_3d_sincos_pos_embed(
     embed_dim,
@@ -299,6 +402,7 @@ class Rotary3DPositionEmbeddingMixin(BaseMixin):
             self.pos_embedding = nn.Parameter(torch.zeros(1, num_patches, int(hidden_size)), requires_grad=True)
         else:
             self.pos_embedding = None
+        print(f"?shape of pos_embedding: {self.pos_embedding.shape}")
 
     def rotary(self, t, **kwargs):
         seq_len = t.shape[2]
@@ -585,6 +689,7 @@ class AdaLNMixin(BaseMixin):
 str_to_dtype = {"fp32": torch.float32, "fp16": torch.float16, "bf16": torch.bfloat16}
 
 
+
 class DiffusionTransformer(BaseModel):
     def __init__(
         self,
@@ -637,6 +742,7 @@ class DiffusionTransformer(BaseModel):
         self.time_interpolation = time_interpolation
         self.inner_hidden_size = hidden_size * 4
         self.zero_init_y_embed = zero_init_y_embed
+
         try:
             self.dtype = str_to_dtype[kwargs.pop("dtype")]
         except:
@@ -773,6 +879,10 @@ class DiffusionTransformer(BaseModel):
         return
 
     def forward(self, x, timesteps=None, context=None, y=None, **kwargs):
+        # print(f"Shape of x: {x.shape}")
+        # print(f"Time steps: {timesteps.shape} and context: {context.shape}")
+        # print(f"Y: {y}")
+        # print(f"Kwargs: {kwargs}")
         b, t, d, h, w = x.shape
         if x.dtype != self.dtype:
             x = x.to(self.dtype)
@@ -791,6 +901,8 @@ class DiffusionTransformer(BaseModel):
         t_emb = timestep_embedding(timesteps, self.model_channels, repeat_only=False, dtype=self.dtype)
         emb = self.time_embed(t_emb)
 
+        
+
         if self.num_classes is not None:
             # assert y.shape[0] == x.shape[0]
             assert x.shape[0] % y.shape[0] == 0
@@ -806,3 +918,35 @@ class DiffusionTransformer(BaseModel):
         kwargs["input_ids"] = kwargs["position_ids"] = kwargs["attention_mask"] = torch.ones((1, 1)).to(x.dtype)
         output = super().forward(**kwargs)[0]
         return output
+
+
+class PLDiffusionTransformer(DiffusionTransformer):
+    def __init__(
+        self,
+        pl_in_channels=6,
+        pl_bias= False,
+        pl_patch_size=(4, 16, 16),
+        **kwargs,
+    ):
+        super().__init__(**kwargs)
+        patch_size = pl_patch_size
+        model_channels = self.hidden_size
+        self.pl_proj = nn.Conv3d(pl_in_channels, model_channels, kernel_size=patch_size, stride=patch_size, bias=pl_bias)
+        nn.init.zeros_(self.pl_proj.weight)
+        if pl_bias:
+            nn.init.zeros_(self.pl_proj.bias)
+
+        self.add_mixin("pl_pos_embed", PL_PositionEmbeddingMixin(), reinit=False)
+
+    def forward(self,x, timesteps=None, context=None, y=None,**kwargs):
+        pl_embed = kwargs.get("pl_emb", None)
+        assert pl_embed is not None, "pl_emb must be provided"
+        if pl_embed.dim() == 4:
+            pl_embed = pl_embed.unsqueeze(0)
+        assert pl_embed.dim() == 5, "pl_emb must be 5d tensor"
+        B, C, F, H, W = pl_embed.shape
+
+        pl_embed = self.pl_proj(pl_embed)
+        pl_embed = rearrange(pl_embed, "b c f h w -> b, (f h w), c ")
+        kwargs["pl_emb"] = torch.cat([torch.zeros(),pl_embed], dim=1)
+        super().forward(x, timesteps=None, context=None, y=None,**kwargs)
