@@ -503,25 +503,37 @@ class VideoDDIMSampler(BaseDiffusionSampler):
     def denoise(self, x, denoiser, alpha_cumprod_sqrt, cond, uc, timestep=None, idx=None, scale=None, scale_emb=None):
         additional_model_inputs = {}
 
+        if 'pl_emb' in cond.keys():
+                print(f"?sampler cond pl_emb shape {cond['pl_emb'].shape}")
+                print(f"? sampler x shape {x.shape}")
         if isinstance(scale, torch.Tensor) == False and scale == 1:
             additional_model_inputs["idx"] = x.new_ones([x.shape[0]]) * timestep
-            pl_emb = cond["pl_emb"]
-            B, C, _, H, W = pl_emb.shape
-            pl_emb = torch.concat([torch.zeros(B, C, 3, H, W).to(torch.bfloat16).to(pl_emb.device), pl_emb], dim=2) # TODO: respect CogVideoX
-            pl_emb = torch.stack((torch.zeros_like(pl_emb), pl_emb), dim=0)
-            additional_model_inputs["pl_emb"] = pl_emb
+            if 'pl_emb' in cond.keys():
+                    pl_emb = cond["pl_emb"]
+                    if pl_emb.dim() == 4:
+                        pl_emb = pl_emb.unsqueeze(0)
+                    B, _, C, H, W = pl_emb.shape
+                    pl_emb = torch.concat([torch.zeros(B, 3, C, H, W).to(pl_emb.dtype).to(pl_emb.device), pl_emb], dim=1) # TODO: respect CogVideoX
+                    # pl_emb = torch.stack((torch.zeros_like(pl_emb, dtype=pl_emb.dtype), pl_emb), dim=0)
+                    pl_emb = torch.concat([torch.zeros_like(pl_emb, dtype=pl_emb.dtype, device=pl_emb.device), pl_emb], dim=0)
+                    additional_model_inputs["pl_emb"] = pl_emb
             if scale_emb is not None:
                 additional_model_inputs["scale_emb"] = scale_emb
             denoised = denoiser(x, alpha_cumprod_sqrt, cond, **additional_model_inputs).to(torch.float32)
         else:
             additional_model_inputs["idx"] = torch.cat([x.new_ones([x.shape[0]]) * timestep] * 2)
-            pl_emb = cond["pl_emb"]
-            B, C, _, H, W = pl_emb.shape
-            pl_emb = torch.concat([torch.zeros(B, C, 3, H, W).to(torch.bfloat16).to(pl_emb.device), pl_emb], dim=2) # TODO: respect CogVideoX
-            pl_emb = torch.stack((torch.zeros_like(pl_emb), pl_emb), dim=0)
-            additional_model_inputs["pl_emb"] = pl_emb
-            # additional_model_inputs["pl_emb"] = cond["pl_emb"]
-            print(f"? pre denoiser x shape {x.shape}")
+            if 'pl_emb' in cond.keys():
+                    pl_emb = cond["pl_emb"]
+                    if pl_emb.dim() == 4:
+                        pl_emb = pl_emb.unsqueeze(0)
+                    B, _, C, H, W = pl_emb.shape
+                    pl_emb = torch.concat([torch.zeros(B, 3, C, H, W).to(pl_emb.dtype).to(pl_emb.device), pl_emb], dim=1) # TODO: respect CogVideoX
+                    # pl_emb = torch.stack((torch.zeros_like(pl_emb, dtype=pl_emb.dtype), pl_emb), dim=0)
+                    pl_emb = torch.concat([torch.zeros_like(pl_emb, dtype=pl_emb.dtype, device=pl_emb.device), pl_emb], dim=0)
+                    print(f"?sampler pl_emb shape {pl_emb.shape}")
+                    additional_model_inputs["pl_emb"] = pl_emb
+                    # additional_model_inputs["pl_emb"] = cond["pl_emb"]
+                    print(f"? pre denoiser x shape {x.shape}")
             denoised = denoiser(
                 *self.guider.prepare_inputs(x, alpha_cumprod_sqrt, cond, uc), **additional_model_inputs
             ).to(torch.float32)
@@ -624,6 +636,7 @@ class VPSDEDPMPP2MSampler(VideoDDIMSampler):
         denoised = self.denoise(
             x, denoiser, alpha_cumprod_sqrt, cond, uc, timestep, idx, scale=scale, scale_emb=scale_emb
         ).to(torch.float32)
+        print(f"?step denoised shape:{denoised.shape}")
         if idx == 1:
             return denoised, denoised
 
@@ -652,6 +665,7 @@ class VPSDEDPMPP2MSampler(VideoDDIMSampler):
         x, s_in, alpha_cumprod_sqrt, num_sigmas, cond, uc, timesteps = self.prepare_sampling_loop(
             x, cond, uc, num_steps
         )
+        print(f"?2 sampler shape of x {x.shape}")
 
         if self.fixed_frames > 0:
             prefix_frames = x[:, : self.fixed_frames]
@@ -680,10 +694,12 @@ class VPSDEDPMPP2MSampler(VideoDDIMSampler):
                 scale=scale,
                 scale_emb=scale_emb,
             )
+            print(f"?3 sampler shape of x {x.shape}")
 
         if self.fixed_frames > 0:
             x = torch.cat([prefix_frames, x[:, self.fixed_frames :]], dim=1)
 
+        print(f"?1 sampler shape of x {x.shape}")
         return x
 
 

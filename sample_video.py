@@ -173,7 +173,8 @@ def sampling_main(args, model_cls):
 
             # cam_params = cam_params[:T]
             cam_params = cam_params[0: ((T - 1) * 4 + 1) * 3: 3] 
-            assert len(cam_params) == 49
+            # cam_params = [cam_params[0]] + cam_params[-((T - 1) * 4 + 1) + 1:] 
+            assert len(cam_params) == 49, f"len of cam_params: {len(cam_params)}"
 
             cam_params = [Camera(cam_param) for cam_param in cam_params]
             intrinsics = np.asarray([[cam_param.fx * image_size[1],
@@ -212,13 +213,13 @@ def sampling_main(args, model_cls):
                 force_uc_zero_embeddings=force_uc_zero_embeddings,
             )
             print(f"Conditioning: {c.keys()} {uc.keys()}")
-            print(f"shape of pl_emb: {c['pl_emb'].shape}, {uc['pl_emb'].shape}")
+            # print(f"shape of pl_emb: {c['pl_emb'].shape}, {uc['pl_emb'].shape}")
 
             for k in c:
                 if not k == "crossattn" and not k == "pl_emb":
                     c[k], uc[k] = map(lambda y: y[k][: math.prod(num_samples)].to("cuda"), (c, uc))
 
-            print(f"shape of pl_emb: {c['pl_emb'].shape}, {uc['pl_emb'].shape}")
+            # print(f"shape of pl_emb: {c['pl_emb'].shape}, {uc['pl_emb'].shape}")
             if args.image2video and image is not None:
                 c["concat"] = image
                 uc["concat"] = image

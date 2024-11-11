@@ -240,6 +240,8 @@ class SATVideoDiffusionEngine(nn.Module):
         denoiser = lambda input, sigma, c, **addtional_model_inputs: self.denoiser(
             self.model, input, sigma, c, concat_images=concat_images, **addtional_model_inputs
         )
+        if "pl_emb" in cond:
+            print(f"?denoiser shape of cond {cond['pl_emb'].shape}")
 
         samples = self.sampler(denoiser, randn, cond, uc=uc, scale=scale, scale_emb=scale_emb)
         samples = samples.to(self.dtype)

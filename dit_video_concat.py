@@ -152,15 +152,15 @@ class PL_PositionEmbeddingMixin(BaseMixin):
     def attention_forward(self, hidden_states, mask, **kw_args):
         attention_forward_default = HOOKS_DEFAULT["attention_forward"]
         
-        pl_embed = kw_args.get("pl_embed", None)
+        pl_embed = kw_args.get("pl_emb", None)
         B, N, D = hidden_states.shape
         B2, N2, D2 = pl_embed.shape
         assert B == B2, "batch size must be the same"
         assert D == D2, "number of patches must be the same"
         assert N >= N2, "number of patches must be larger than that of pl_embed"
-        hidden_states = hidden_states + torch.cat([ torch.zeros(B, N-N2, D).to(hidden_states.device), pl_embed], dim=1)
+        hidden_states = hidden_states + torch.cat([ torch.zeros(B, N-N2, D).to(hidden_states.device, dtype=pl_embed.dtype), pl_embed], dim=1)
 
-        return attention_forward_default(hidden_states, mask, **kw_args)
+        return attention_forward_default(self, hidden_states, mask, **kw_args)
 
 
 def get_3d_sincos_pos_embed(
@@ -857,6 +857,7 @@ class DiffusionTransformer(BaseModel):
             raise NotImplementedError
 
         final_layer_config = module_configs["final_layer_config"]
+        print(f"?final_layer_config: {final_layer_config}")
         self.add_mixin(
             "final_layer",
             instantiate_from_config(
@@ -941,12 +942,57 @@ class PLDiffusionTransformer(DiffusionTransformer):
     def forward(self,x, timesteps=None, context=None, y=None,**kwargs):
         pl_embed = kwargs.get("pl_emb", None)
         assert pl_embed is not None, "pl_emb must be provided"
+        # print(f"?shape of pl_embed: {pl_embed.shape}")
+        # print param of pl_proj
+        # print(f"pl_proj parameters: {self.pl_proj.weight}")
         if pl_embed.dim() == 4:
             pl_embed = pl_embed.unsqueeze(0)
         assert pl_embed.dim() == 5, "pl_emb must be 5d tensor"
+        pl_embed = pl_embed.transpose(1, 2)
         B, C, F, H, W = pl_embed.shape
 
         pl_embed = self.pl_proj(pl_embed)
-        pl_embed = rearrange(pl_embed, "b c f h w -> b, (f h w), c ")
-        kwargs["pl_emb"] = torch.cat([torch.zeros(),pl_embed], dim=1)
-        super().forward(x, timesteps=None, context=None, y=None,**kwargs)
+        pl_embed = rearrange(pl_embed, "b c f h w -> b (f h w) c ")
+        kwargs["pl_emb"] = pl_embed
+        return super().forward(x, timesteps, context, y,**kwargs)
+    
+class PLMLPDiffusionTransformer(DiffusionTransformer):
+    def __init__(
+        self,
+        pl_in_channels=6,
+        pl_bias= False,
+        pl_patch_size=(4, 16, 16),
+        mlp_layers=5,
+        **kwargs,
+    ):
+        super().__init__(**kwargs)
+        patch_size = pl_patch_size
+        model_channels = self.hidden_size
+        self.pl_proj = nn.Conv3d(pl_in_channels, model_channels, kernel_size=patch_size, stride=patch_size, bias=pl_bias)
+        nn.init.zeros_(self.pl_proj.weight)
+        if pl_bias:
+            nn.init.zeros_(self.pl_proj.bias)
+        self.pl_mlp = nn.Sequential(*[nn.Linear(model_channels, model_channels) for _ in range(mlp_layers)])
+        for layer in self.pl_mlp:
+            nn.init.xavier_uniform_(layer.weight)
+            nn.init.zeros_(layer.bias)
+
+        self.add_mixin("pl_pos_embed", PL_PositionEmbeddingMixin(), reinit=False)
+
+    def forward(self,x, timesteps=None, context=None, y=None,**kwargs):
+        pl_embed = kwargs.get("pl_emb", None)
+        assert pl_embed is not None, "pl_emb must be provided"
+        # print(f"?shape of pl_embed: {pl_embed.shape}")
+        if pl_embed.dim() == 4:
+            pl_embed = pl_embed.unsqueeze(0)
+        assert pl_embed.dim() == 5, "pl_emb must be 5d tensor"
+        pl_embed = pl_embed.transpose(1, 2)
+
+        pl_embed = self.pl_proj(pl_embed)
+        pl_embed = rearrange(pl_embed, "b c f h w -> b (f h w) c ")
+        for layer in self.pl_mlp:
+            pl_embed = layer(pl_embed)
+            pl_embed = F.gelu(pl_embed)
+        # pl_embed = rearrange(pl_embed, "b c f h w -> b (f h w) c ")
+        kwargs["pl_emb"] = pl_embed
+        return super().forward(x, timesteps, context, y,**kwargs)

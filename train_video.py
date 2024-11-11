@@ -20,8 +20,11 @@ from einops import rearrange
 
 try:
     import wandb
+    # wandb.login(key=os.environ["WANDB_KEY"])
 except ImportError:
     print("warning: wandb not installed")
+except KeyError:
+    print("warning: WANDB_KEY not set")
 
 
 def print_debug(args, s):
@@ -207,7 +210,7 @@ if __name__ == "__main__":
         os.environ["LOCAL_RANK"] = os.environ["OMPI_COMM_WORLD_LOCAL_RANK"]
         os.environ["WORLD_SIZE"] = os.environ["OMPI_COMM_WORLD_SIZE"]
         os.environ["RANK"] = os.environ["OMPI_COMM_WORLD_RANK"]
-
+    
     py_parser = argparse.ArgumentParser(add_help=False)
     known, args_list = py_parser.parse_known_args()
     args = get_args(args_list)
@@ -224,6 +227,7 @@ if __name__ == "__main__":
             base_config = yaml.safe_load(f)
         configs.append(base_config)
     args.log_config = configs
+    print(f"?args: {args}")
 
     training_main(
         args,
