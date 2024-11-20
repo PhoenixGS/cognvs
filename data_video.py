@@ -22,6 +22,7 @@ from torch.utils.data import Dataset
 from packaging import version as pver
 import torch.nn as nn
 import torchvision.transforms.functional as F
+import cv2
 
 
 def read_video(
@@ -483,6 +484,7 @@ class RandomHorizontalFlipWithPose(nn.Module):
 
 class Camera(object):
     def __init__(self, entry):
+        assert len(entry) == 19
         fx, fy, cx, cy = entry[1:5]
         self.fx = fx
         self.fy = fy
@@ -732,6 +734,7 @@ class RealEstate10KPose(Dataset):
         if self.shuffle_frames:
             perm = np.random.permutation(self.sample_n_frames)
             frame_indices = frame_indices[perm]
+        # print(f"?frame_indices: {frame_indices}")
 
         pixel_values = torch.from_numpy(video_reader.get_batch(frame_indices).numpy()).permute(0, 3, 1, 2).contiguous()
         pixel_values = pixel_values / 255.
@@ -803,3 +806,211 @@ class RealEstate10KPose(Dataset):
     @classmethod
     def create_dataset_function(cls, path, args, **kwargs):
         return cls(data_dir=path, **kwargs)
+
+class VidReader: # directly to numpy
+    def __init__(self, frame_list):
+        self.frame_list = frame_list
+        self.length = len(frame_list)
+        self.images = [cv2.imread(frame) for frame in frame_list]
+        self.images = np.array(self.images)
+
+    def get_batch(self, frame_indices):
+        return self.images[frame_indices]
+    
+class DL3DV10KPose(Dataset):
+    def __init__(
+            self,
+            data_dir,
+            video_size,
+            fps, # not considered yet
+            max_num_frames,
+            annotation_json="train.json",
+            sample_stride=4,
+            minimum_sample_stride=1,
+            relative_pose=False,
+            zero_t_first_frame=False,
+            rescale_fxy=False,
+            shuffle_frames=False,
+            use_flip=False,
+            # return_clip_name=False,
+    ):
+        self.root_path = data_dir
+        self.relative_pose = relative_pose
+        self.zero_t_first_frame = zero_t_first_frame
+        self.sample_stride = sample_stride
+        self.minimum_sample_stride = minimum_sample_stride
+        self.sample_n_frames = max_num_frames
+        # self.return_clip_name = return_clip_name
+        self.fps = fps
+
+        self.dataset = json.load(open(os.path.join(data_dir, annotation_json), 'r'))
+        self.length = len(self.dataset)
+
+        sample_size = tuple(video_size) if not isinstance(video_size, int) else (video_size, video_size)
+        self.sample_size = sample_size
+        if use_flip:
+            pixel_transforms = [TT.Resize(sample_size),
+                                RandomHorizontalFlipWithPose(),
+                                TT.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5], inplace=True)]
+        else:
+            pixel_transforms = [TT.Resize(sample_size),
+                                TT.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5], inplace=True)]
+        self.rescale_fxy = rescale_fxy
+        self.sample_wh_ratio = sample_size[1] / sample_size[0]
+
+        self.pixel_transforms = pixel_transforms
+        self.shuffle_frames = shuffle_frames
+        self.use_flip = use_flip
+
+    def get_relative_pose(self, cam_params):
+        abs_w2cs = [cam_param.w2c_mat for cam_param in cam_params]
+        abs_c2ws = [cam_param.c2w_mat for cam_param in cam_params]
+        source_cam_c2w = abs_c2ws[0]
+        if self.zero_t_first_frame:
+            cam_to_origin = 0
+        else:
+            cam_to_origin = np.linalg.norm(source_cam_c2w[:3, 3])
+        target_cam_c2w = np.array([
+            [1, 0, 0, 0],
+            [0, 1, 0, -cam_to_origin],
+            [0, 0, 1, 0],
+            [0, 0, 0, 1]
+        ])
+        abs2rel = target_cam_c2w @ abs_w2cs[0]
+        ret_poses = [target_cam_c2w, ] + [abs2rel @ abs_c2w for abs_c2w in abs_c2ws[1:]]
+        ret_poses = np.array(ret_poses, dtype=np.float32)
+        return ret_poses
+
+    # def load_cameras(self, idx):
+    #     video_dict = self.dataset[idx]
+    #     pose_file = os.path.join(self.root_path, video_dict['pose_file'])
+    #     with open(pose_file, 'r') as f:
+    #         poses = f.readlines()
+    #     poses = [pose.strip().split(' ') for pose in poses[1:]]
+    #     cam_params = [[float(x) for x in pose] for pose in poses]
+    #     cam_params = [Camera(cam_param) for cam_param in cam_params]
+    #     return cam_params
+
+
+    def load_video(self, idx):
+        video_dict = self.datasest[idx]
+        clip_name = video_dict["clip_name"]
+        video_caption = video_dict["caption"]
+        frame_idx = video_dict["frame_idx"]
+
+        pose_file = os.path.join(self.root_path, video_dict['pose_file'])
+        with open(pose_file, 'r') as f:
+            transforms = json.load(f) # data in nerfStudio format
+        fl_x = transforms['fl_x']
+        fl_y = transforms['fl_y']
+        cx = transforms['cx'] / transforms['w']
+        cy = transforms['cy'] / transforms['h']
+        # transforms[']
+        cam_params = []
+        frames = [transforms['frames'][x] for x in frame_idx]
+        for transform in frames:
+            transform_matrix = transform['transform_matrix']
+            cam_params.append(Camera([0, fl_x, fl_y, cx, cy] + transform_matrix[0] + transform_matrix[1] + transform_matrix[2]))
+
+        frame_list = []
+        for transform in frames:
+            frame_list.append(transform['file_path'])
+        video_reader = VidReader(frame_list)
+
+        return clip_name, cam_params, video_reader, video_caption
+
+    def get_batch(self, idx):
+        clip_name, cam_params, video_reader, video_caption = self.load_video(idx)
+        assert len(cam_params) >= self.sample_n_frames
+        total_frames = len(cam_params)
+
+        current_sample_stride = self.sample_stride
+
+        if total_frames < self.sample_n_frames * current_sample_stride:
+            maximum_sample_stride = int(total_frames // self.sample_n_frames)
+            current_sample_stride = random.randint(self.minimum_sample_stride, maximum_sample_stride)
+
+        cropped_length = self.sample_n_frames * current_sample_stride
+        start_frame_ind = random.randint(0, max(0, total_frames - cropped_length - 1))
+        end_frame_ind = min(start_frame_ind + cropped_length, total_frames)
+
+        assert end_frame_ind - start_frame_ind >= self.sample_n_frames
+        # frame_indices = np.linspace(start_frame_ind, end_frame_ind - 1, self.sample_n_frames, dtype=int)
+        frame_indices = np.linspace(start_frame_ind, end_frame_ind - 1, self.sample_n_frames, dtype=int)
+
+        if self.shuffle_frames:
+            perm = np.random.permutation(self.sample_n_frames)
+            frame_indices = frame_indices[perm]
+        # print(f"?frame_indices: {frame_indices}")
+
+        pixel_values = torch.from_numpy(video_reader.get_batch(frame_indices)).permute(0, 3, 1, 2).contiguous()
+        pixel_values = pixel_values / 255.
+
+        cam_params = [cam_params[indice] for indice in frame_indices]
+        if self.rescale_fxy:
+            ori_h, ori_w = pixel_values.shape[-2:]
+            ori_wh_ratio = ori_w / ori_h
+            if ori_wh_ratio > self.sample_wh_ratio:       # rescale fx
+                resized_ori_w = self.sample_size[0] * ori_wh_ratio
+                for cam_param in cam_params:
+                    cam_param.fx = resized_ori_w * cam_param.fx / self.sample_size[1]
+            else:                                          # rescale fy
+                resized_ori_h = self.sample_size[1] / ori_wh_ratio
+                for cam_param in cam_params:
+                    cam_param.fy = resized_ori_h * cam_param.fy / self.sample_size[0]
+        intrinsics = np.asarray([[cam_param.fx * self.sample_size[1],
+                                  cam_param.fy * self.sample_size[0],
+                                  cam_param.cx * self.sample_size[1],
+                                  cam_param.cy * self.sample_size[0]]
+                                 for cam_param in cam_params], dtype=np.float32)
+        intrinsics = torch.as_tensor(intrinsics)[None]                  # [1, n_frame, 4]
+        if self.relative_pose:
+            c2w_poses = self.get_relative_pose(cam_params)
+        else:
+            c2w_poses = np.array([cam_param.c2w_mat for cam_param in cam_params], dtype=np.float32)
+        c2w = torch.as_tensor(c2w_poses)[None]                          # [1, n_frame, 4, 4]
+        if self.use_flip:
+            flip_flag = self.pixel_transforms[1].get_flip_flag(self.sample_n_frames)
+        else:
+            flip_flag = torch.zeros(self.sample_n_frames, dtype=torch.bool, device=c2w.device)
+        plucker_embedding = ray_condition(intrinsics, c2w, self.sample_size[0], self.sample_size[1], device='cpu',
+                                          flip_flag=flip_flag)[0].permute(0, 3, 1, 2).contiguous()
+
+        return pixel_values, video_caption, plucker_embedding, flip_flag, clip_name
+
+    def __len__(self):
+        return self.length
+
+    def __getitem__(self, idx):
+        decord.bridge.set_bridge("torch")
+
+        while True:
+            try:
+                video, video_caption, plucker_embedding, flip_flag, clip_name = self.get_batch(idx)
+                break
+
+            except Exception as e:
+                idx = random.randint(0, self.length - 1)
+
+        if self.use_flip:
+            video = self.pixel_transforms[0](video)
+            video = self.pixel_transforms[1](video, flip_flag)
+            video = self.pixel_transforms[2](video)
+        else:
+            for transform in self.pixel_transforms:
+                video = transform(video)
+        # if self.return_clip_name:
+        #     sample = dict(pixel_values=video, text=video_caption, plucker_embedding=plucker_embedding, clip_name=clip_name)
+        # else:
+        #     sample = dict(pixel_values=video, text=video_caption, plucker_embedding=plucker_embedding)
+        
+        # plucker_embedding to bfloat16
+        plucker_embedding = plucker_embedding.to(torch.bfloat16)
+        # print(f"?????shape of video and plucker_embedding: {video.shape}, {plucker_embedding.shape}")
+        sample = dict(mp4=video, txt=video_caption, num_frames=self.sample_n_frames, fps=self.fps, plucker_embedding=plucker_embedding)
+        return sample
+
+    @classmethod
+    def create_dataset_function(cls, path, args, **kwargs):
+        return cls(data_dir=path, **kwargs)
+    
