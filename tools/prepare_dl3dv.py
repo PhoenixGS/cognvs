@@ -40,6 +40,8 @@ def step_two(origin):
                 "video_name": uid,
                 "frame_idx": [],
                 "caption": "",
+                "root_path": path,
+                "pose_file": os.path.join(path, "transforms.json"),
             }
             for j in range(i, i+96, 2):
                 dat["frame_idx"].append(j)

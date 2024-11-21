@@ -898,7 +898,8 @@ class DL3DV10KPose(Dataset):
         video_caption = video_dict["caption"]
         frame_idx = video_dict["frame_idx"]
 
-        pose_file = os.path.join(self.root_path, video_dict['pose_file'])
+        # pose_file = os.path.join(self.root_path, video_dict['pose_file'])
+        pose_file = video_dict['pose_file']
         with open(pose_file, 'r') as f:
             transforms = json.load(f) # data in nerfStudio format
         fl_x = transforms['fl_x']
@@ -914,7 +915,7 @@ class DL3DV10KPose(Dataset):
 
         frame_list = []
         for transform in frames:
-            frame_list.append(transform['file_path'])
+            frame_list.append(os.path.join(video_dict['root_path'], transform['file_path']))
         video_reader = VidReader(frame_list)
 
         return clip_name, cam_params, video_reader, video_caption
