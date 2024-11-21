@@ -5,6 +5,9 @@ from typing import List, Union
 from tqdm import tqdm
 from omegaconf import ListConfig
 import imageio
+import cv2
+import decord
+from decord import VideoReader
 
 import torch
 import numpy as np
@@ -117,7 +120,7 @@ def resize_for_rectangle_crop(arr, image_size, reshape_mode="random"):
     return arr
 
 
-def sampling_main(args, model_cls):
+def evaluating_main(args, model_cls):
     if isinstance(model_cls, type):
         model = get_model(args, model_cls)
     else:
@@ -151,10 +154,13 @@ def sampling_main(args, model_cls):
     with torch.no_grad():
         for text, cnt in tqdm(data_iter):
             if args.image2video:
-                text, pose_path, image_path = text.split("@@")
-                assert os.path.exists(image_path), image_path
+                text, pose_path, clip_path = text.split("@@")
+                assert os.path.exists(clip_path), clip_path
                 assert os.path.exists(pose_path), pose_path
-                image = Image.open(image_path).convert("RGB")
+                video_reader = VideoReader(clip_path)
+                
+                image = video_reader[0].asnumpy()
+                image = Image.fromarray(image)
                 image = transform(image).unsqueeze(0).to("cuda")
                 image = resize_for_rectangle_crop(image, image_size, reshape_mode="center").unsqueeze(0)
                 image = image * 2.0 - 1.0
@@ -162,14 +168,17 @@ def sampling_main(args, model_cls):
                 image = model.encode_first_stage(image, None)
                 image = image.permute(0, 2, 1, 3, 4).contiguous()
                 pad_shape = (image.shape[0], T - 1, C, H // F, W // F)
-                image = torch.concat([image, torch.zeros(pad_shape).to(image.device).to(image.dtype)], dim=1)
+                image = torch.cat([image, torch.zeros(pad_shape).to(image.device).to(image.dtype)], dim=1)
             else:
                 image = None
 
-            with open(pose_path, "r") as f:
-                poses = f.readlines()
-            poses = [pose.strip().split(' ') for pose in poses[1:]]
-            cam_params = [[float(x) for x in pose] for pose in poses]
+            if pose_path.endswith(".txt"):
+                with open(pose_path, "r") as f:
+                    poses = f.readlines()
+                poses = [pose.strip().split(' ') for pose in poses[1:]]
+                cam_params = [[float(x) for x in pose] for pose in poses]
+            else:
+                pass
 
             # cam_params = cam_params[:T]
             cam_params = cam_params[0: ((T - 1) * 4 + 1) * 3: 3] 
@@ -212,8 +221,6 @@ def sampling_main(args, model_cls):
                 batch_uc=batch_uc,
                 force_uc_zero_embeddings=force_uc_zero_embeddings,
             )
-            print(f"Conditioning: {c.keys()} {uc.keys()}")
-            # print(f"shape of pl_emb: {c['pl_emb'].shape}, {uc['pl_emb'].shape}")
 
             for k in c:
                 if not k == "crossattn" and not k == "pl_emb":
@@ -266,11 +273,21 @@ def sampling_main(args, model_cls):
                 samples_x = recon.permute(0, 2, 1, 3, 4).contiguous()
                 samples = torch.clamp((samples_x + 1.0) / 2.0, min=0.0, max=1.0).cpu()
 
+                # calc average psnr between samples and video
+                ground_truth = video_reader[:]
+                psnr = 0
+                for i in range(T):
+                    psnr += cv2.PSNR(samples[i].numpy(), ground_truth[i].asnumpy())
+                psnr /= T
+
+                print(f"PSNR: {psnr}")
+
                 save_path = os.path.join(
-                    args.output_dir, str(cnt) + "_" + text.replace(" ", "_").replace("/", "")[:120], str(index)
+                    args.output_dir, "evaluation_" + str(cnt) + "_" + text.replace(" ", "_").replace("/", "")[:120], str(index)
                 )
                 if mpu.get_model_parallel_rank() == 0:
                     save_video_as_grid_and_mp4(samples, save_path, fps=args.sampling_fps)
+
 
 
 if __name__ == "__main__":
@@ -289,4 +306,4 @@ if __name__ == "__main__":
     args.model_config.network_config.params.transformer_args.checkpoint_activations = False
     args.model_config.loss_fn_config.params.sigma_sampler_config.params.uniform_sampling = False
 
-    sampling_main(args, model_cls=SATVideoDiffusionEngine)
+    evaluating_main(args, model_cls=SATVideoDiffusionEngine)
