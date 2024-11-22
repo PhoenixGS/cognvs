@@ -279,3 +279,72 @@ class FrozenT5Embedder(AbstractEmbModel):
 
     def encode(self, text):
         return self(text)
+
+class PoseIdentityEmbedder(AbstractEmbModel):
+    """Identity Pose Encoder"""
+
+    def __init__(
+        self,
+        device: str = "cuda"
+    ):
+        super().__init__()
+        self.device = device
+
+    def forward(self, x):
+        # (b f c h w)
+        return x.to(self.device)
+    
+class PoseTokenEmbedder(nn.Module):
+    def __init__(
+        self,
+        hidden_size: int = 512,
+        layers: int = 5,
+        channels: int = 6,
+        image_size: Tuple[int, int] = (480, 720),
+        device: str = "cuda"
+    ):
+        super(PoseTokenEmbedder, self).__init__()
+        self.device = device
+        self.hidden_size = hidden_size
+        self.layers = layers
+        self.channels = channels
+        self.image_size = image_size
+
+        # 定义卷积层
+        self.conv_layers = nn.Sequential(
+            nn.Conv2d(channels, 64, kernel_size=3, stride=1, padding=1),
+            nn.ReLU(),
+            nn.Conv2d(64, 128, kernel_size=3, stride=1, padding=1),
+            nn.ReLU(),
+            nn.Conv2d(128, 256, kernel_size=3, stride=1, padding=1),
+            nn.ReLU(),
+            nn.Conv2d(256, 512, kernel_size=3, stride=1, padding=1),
+            nn.ReLU(),
+            nn.Conv2d(512, hidden_size, kernel_size=3, stride=1, padding=1),
+            nn.ReLU()
+        )
+        self.gap = nn.AdaptiveAvgPool2d(1)
+        
+        # mlp of 'layers' layers
+        self.mlp = nn.Sequential(
+            *[nn.Linear(hidden_size, hidden_size) for _ in range(layers)]
+        )
+
+    def forward(self, x):
+        # x shape: (b, f, c, h, w)
+        b, f, c, h, w = x.shape
+        
+        x = x.view(b * f, c, h, w) # (b*f, c, h, w)
+
+        x = self.conv_layers(x) # (b*f, hidden_size, 1, 1)
+
+        x = x.view(b * f, self.hidden_size, h, w) # (b*f, hidden_size, h, w)
+
+        x = self.gap(x) # (b*f, hidden_size, 1, 1)
+        x = x.view(b * f, self.hidden_size) # (b*f, hidden_size)
+
+        x = self.mlp(x) # (b*f, hidden_size)
+
+        x = x.view(b, f, self.hidden_size) # (b, f, hidden_size)
+
+        return x.to(self.device)
