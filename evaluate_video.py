@@ -273,12 +273,20 @@ def evaluating_main(args, model_cls):
                 samples_x = recon.permute(0, 2, 1, 3, 4).contiguous()
                 samples = torch.clamp((samples_x + 1.0) / 2.0, min=0.0, max=1.0).cpu()
 
-                # calc average psnr between samples and video
-                ground_truth = video_reader[:]
+                ground_truth = video_reader[0: ((T - 1) * 4 + 1) * 3: 3].asnumpy() # (f, h, w, c)
+                ground_truth = [resize_for_rectangle_crop(TT.ToTensor()(Image.fromarray(frame)).unsqueeze(0), image_size, reshape_mode="center") for frame in ground_truth] # (f, c, h, w)
+                ground_truth = torch.stack(ground_truth, dim=0).to(torch.float32).unsqueeze(0) # (1, f, c, h, w)
+
+                frame_num = (T - 1) * 4 + 1
                 psnr = 0
-                for i in range(T):
-                    psnr += cv2.PSNR(samples[i].numpy(), ground_truth[i].asnumpy())
-                psnr /= T
+                for i in range(frame_num):
+                    psnr += cv2.PSNR(samples[0, i].numpy(), ground_truth[0, i].numpy())
+                psnr /= frame_num
+
+                # psnr = 0
+                # for i in range(T):
+                #     psnr += cv2.PSNR(samples[i].numpy(), ground_truth[i].asnumpy())
+                # psnr /= T
 
                 print(f"PSNR: {psnr}")
 
