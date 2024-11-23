@@ -10,6 +10,12 @@ class NoDynamicThresholding:
         scale = append_dims(scale, cond.ndim) if isinstance(scale, torch.Tensor) else scale
         return uncond + scale * (cond - uncond)
 
+class CMGThresholding:
+    def __call__(self, x_00, x_0t, x_ct, scale_t, scale_c):
+        scale_t = append_dims(scale_t, x_0t.ndim) if isinstance(scale_t, torch.Tensor) else scale_t
+        scale_c = append_dims(scale_c, x_0t.ndim) if isinstance(scale_c, torch.Tensor) else scale_c
+        result = x_00 + scale_t * (x_0t - x_00) + scale_c * (x_ct - x_0t)
+        return result
 
 class StaticThresholding:
     def __call__(self, uncond, cond, scale):
