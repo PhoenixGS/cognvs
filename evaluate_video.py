@@ -277,10 +277,12 @@ def evaluating_main(args, model_cls):
                 ground_truth = [resize_for_rectangle_crop(TT.ToTensor()(Image.fromarray(frame)).unsqueeze(0), image_size, reshape_mode="center") for frame in ground_truth] # (f, c, h, w)
                 ground_truth = torch.stack(ground_truth, dim=0).to(torch.float32).unsqueeze(0) # (1, f, c, h, w)
 
+                samples_t = (samples * 255).to(torch.uint8)
+                ground_truth = (ground_truth * 255).to(torch.uint8)
                 frame_num = (T - 1) * 4 + 1
                 psnr = 0
                 for i in range(frame_num):
-                    psnr += cv2.PSNR(samples[0, i].numpy(), ground_truth[0, i].numpy())
+                    psnr += cv2.PSNR(samples_t[0, i].numpy(), ground_truth[0, i].numpy())
                 psnr /= frame_num
 
                 # psnr = 0
