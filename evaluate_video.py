@@ -56,12 +56,18 @@ def get_batch(keys, value_dict, N: Union[List, ListConfig], T=None, device="cuda
     batch = {}
     batch_uc = {}
 
+    print(f"???get_batch keys: {keys}")
+
     for key in keys:
         if key == "txt":
             batch["txt"] = np.repeat([value_dict["prompt"]], repeats=math.prod(N)).reshape(N).tolist()
             batch_uc["txt"] = np.repeat([value_dict["negative_prompt"]], repeats=math.prod(N)).reshape(N).tolist()
         # elif key == "plucker_embedding":
         #     batch["plucker_embedding"] = value_dict["plucker_embedding"]
+        elif key == 'plucker_embedding':
+            print(f"plucker_embedding: c and uc")
+            batch['plucker_embedding'] = value_dict['plucker_embedding']
+            batch_uc['plucker_embedding'] = torch.zeros_like(value_dict['plucker_embedding'])
         else:
             batch[key] = value_dict[key]
 
@@ -72,7 +78,6 @@ def get_batch(keys, value_dict, N: Union[List, ListConfig], T=None, device="cuda
         if key not in batch_uc and isinstance(batch[key], torch.Tensor):
             batch_uc[key] = torch.clone(batch[key])
     return batch, batch_uc
-
 
 def save_video_as_grid_and_mp4(video_batch: torch.Tensor, save_path: str, fps: int = 5, args=None, key=None):
     os.makedirs(save_path, exist_ok=True)
