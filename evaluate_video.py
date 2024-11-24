@@ -283,11 +283,11 @@ def evaluating_main(args, model_cls):
                 ground_truth = torch.stack(ground_truth, dim=0).to(torch.float32).unsqueeze(0) # (1, f, c, h, w)
 
                 samples_t = (samples * 255).to(torch.uint8)
-                ground_truth = (ground_truth * 255).to(torch.uint8)
+                ground_truth_t = (ground_truth * 255).to(torch.uint8)
                 frame_num = (T - 1) * 4 + 1
                 psnr = 0
                 for i in range(frame_num):
-                    psnr += cv2.PSNR(samples_t[0, i].numpy(), ground_truth[0, i].numpy())
+                    psnr += cv2.PSNR(samples_t[0, i].numpy(), ground_truth_t[0, i].numpy())
                 psnr /= frame_num
 
                 # psnr = 0
@@ -303,6 +303,12 @@ def evaluating_main(args, model_cls):
                 if mpu.get_model_parallel_rank() == 0:
                     save_video_as_grid_and_mp4(samples, save_path, fps=args.sampling_fps)
 
+                # save ground truth
+                save_path = os.path.join(
+                    args.output_dir, "evaluation_" + str(cnt) + "_" + text.replace(" ", "_").replace("/", "")[:120], str(index) + "_gt"
+                )
+                if mpu.get_model_parallel_rank() == 0:
+                    save_video_as_grid_and_mp4(ground_truth, save_path, fps=args.sampling_fps)
 
 
 if __name__ == "__main__":
