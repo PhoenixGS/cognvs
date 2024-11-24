@@ -124,6 +124,25 @@ def resize_for_rectangle_crop(arr, image_size, reshape_mode="random"):
     arr = TT.functional.crop(arr, top=top, left=left, height=image_size[0], width=image_size[1])
     return arr
 
+def get_relative_pose(cam_params):
+    abs_w2cs = [cam_param.w2c_mat for cam_param in cam_params]
+    abs_c2ws = [cam_param.c2w_mat for cam_param in cam_params]
+    source_cam_c2w = abs_c2ws[0]
+    # if self.zero_t_first_frame:
+    if False:
+        cam_to_origin = 0
+    else:
+        cam_to_origin = np.linalg.norm(source_cam_c2w[:3, 3])
+    target_cam_c2w = np.array([
+        [1, 0, 0, 0],
+        [0, 1, 0, -cam_to_origin],
+        [0, 0, 1, 0],
+        [0, 0, 0, 1]
+    ])
+    abs2rel = target_cam_c2w @ abs_w2cs[0]
+    ret_poses = [target_cam_c2w, ] + [abs2rel @ abs_c2w for abs_c2w in abs_c2ws[1:]]
+    ret_poses = np.array(ret_poses, dtype=np.float32)
+    return ret_poses
 
 def evaluating_main(args, model_cls):
     if isinstance(model_cls, type):
@@ -197,7 +216,11 @@ def evaluating_main(args, model_cls):
                                     cam_param.cy * image_size[0]]
                                     for cam_param in cam_params], dtype=np.float32)
             intrinsics = torch.as_tensor(intrinsics)[None]                  # [1, n_frame, 4]
-            c2w_poses = np.array([cam_param.c2w_mat for cam_param in cam_params], dtype=np.float32)
+            if args.relative_pose:
+                c2w_poses = get_relative_pose(cam_params)
+            else:
+                c2w_poses = np.array([cam_param.c2w_mat for cam_param in cam_params], dtype=np.float32)
+            # c2w_poses = np.array([cam_param.c2w_mat for cam_param in cam_params], dtype=np.float32)
             c2w = torch.as_tensor(c2w_poses)[None]                          # [1, n_frame, 4, 4]
             flip_flag = torch.zeros((T - 1) * 4 + 1, dtype=torch.bool, device=c2w.device)
             plucker_embedding = ray_condition(intrinsics, c2w, image_size[0], image_size[1], device='cpu',
@@ -288,6 +311,7 @@ def evaluating_main(args, model_cls):
                 psnr = 0
                 for i in range(frame_num):
                     psnr += cv2.PSNR(samples_t[0, i].numpy(), ground_truth_t[0, i].numpy())
+                    print(f" PSNR: {i}: {cv2.PSNR(samples_t[0, i].numpy(), ground_truth_t[0, i].numpy())}")
                 psnr /= frame_num
 
                 # psnr = 0

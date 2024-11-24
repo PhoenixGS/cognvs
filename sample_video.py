@@ -196,9 +196,9 @@ def sampling_main(args, model_cls):
             poses = [pose.strip().split(' ') for pose in poses[1:]]
             cam_params = [[float(x) for x in pose] for pose in poses]
 
-            cam_count = (T - 1) * 4 + 1
-            cam_stride = len(cam_params) // cam_count
-            cam_params = cam_params[::cam_stride]
+            # cam_count = (T - 1) * 4 + 1
+            # cam_stride = len(cam_params) // cam_count
+            # cam_params = cam_params[::cam_stride]
             # cam_params = cam_params[:cam_count]
             # cam_params = cam_params[:T]
             cam_params = cam_params[0: ((T - 1) * 4 + 1) * 3: 3] 
@@ -216,7 +216,7 @@ def sampling_main(args, model_cls):
                 c2w_poses = get_relative_pose(cam_params)
             else:
                 c2w_poses = np.array([cam_param.c2w_mat for cam_param in cam_params], dtype=np.float32)
-            c2w_poses = np.array([cam_param.c2w_mat for cam_param in cam_params], dtype=np.float32)
+            # c2w_poses = np.array([cam_param.c2w_mat for cam_param in cam_params], dtype=np.float32)
             c2w = torch.as_tensor(c2w_poses)[None]                          # [1, n_frame, 4, 4]
             flip_flag = torch.zeros((T - 1) * 4 + 1, dtype=torch.bool, device=c2w.device)
             plucker_embedding = ray_condition(intrinsics, c2w, image_size[0], image_size[1], device='cpu',
