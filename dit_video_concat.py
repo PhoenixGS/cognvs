@@ -996,3 +996,65 @@ class PLMLPDiffusionTransformer(DiffusionTransformer):
         # pl_embed = rearrange(pl_embed, "b c f h w -> b (f h w) c ")
         kwargs["pl_emb"] = pl_embed
         return super().forward(x, timesteps, context, y,**kwargs)
+
+class NormalizedResidualMLP(nn.Module):
+    def __init__(
+        self,
+        channels,
+        layers,
+    ):
+        super(NormalizedResidualMLP, self).__init__()
+        self.layers = nn.ModuleList(
+            [nn.Sequential(nn.Linear(channels, channels), nn.LayerNorm(channels), nn.GELU()) for _ in range(layers)]
+        )
+        for layer in self.layers:
+            # nn.init.xavier_uniform_(layer[0].weight)
+            nn.init.zeros_(layer[0].weight)
+            nn.init.zeros_(layer[0].bias)
+
+    def forward(self, x):
+        for layer in self.layers:
+            x = x + layer(x)
+        return x
+
+class PLNRMLPDiffusionTransformer(DiffusionTransformer):
+    def __init__(
+        self,
+        pl_in_channels=6,
+        pl_bias= False,
+        pl_patch_size=(4, 16, 16),
+        mlp_layers=5,
+        **kwargs,
+    ):
+        super().__init__(**kwargs)
+        patch_size = pl_patch_size
+        model_channels = self.hidden_size
+        self.pl_proj = nn.Conv3d(pl_in_channels, model_channels, kernel_size=patch_size, stride=patch_size, bias=pl_bias)
+        nn.init.zeros_(self.pl_proj.weight)
+        if pl_bias:
+            nn.init.zeros_(self.pl_proj.bias)
+        self.pl_mlp = NormalizedResidualMLP(model_channels, mlp_layers)
+
+        self.add_mixin("pl_pos_embed", PL_PositionEmbeddingMixin(), reinit=False)
+
+    def forward(self,x, timesteps=None, context=None, y=None,**kwargs):
+        pl_embed = kwargs.get("pl_emb", None)
+        assert pl_embed is not None, "pl_emb must be provided"
+        # print(f"?shape of pl_embed: {pl_embed.shape}")
+        if pl_embed.dim() == 4:
+            pl_embed = pl_embed.unsqueeze(0)
+        assert pl_embed.dim() == 5, "pl_emb must be 5d tensor"
+        pl_embed = pl_embed.transpose(1, 2)
+
+        pl_embed = self.pl_proj(pl_embed)
+        pl_embed = rearrange(pl_embed, "b c f h w -> b (f h w) c ")
+        pl_embed = self.pl_mlp(pl_embed)
+        # print max and min of pl_embed
+        # print(f"max of pl_embed: {pl_embed.max()}")
+        # print(f"min of pl_embed: {pl_embed.min()}")
+        # print max and min of x
+        # print(f"max of x: {x.max()}")
+        # print(f"min of x: {x.min()}")
+        # pl_embed = rearrange(pl_embed, "b c f h w -> b (f h w) c ")
+        kwargs["pl_emb"] = pl_embed
+        return super().forward(x, timesteps, context, y,**kwargs)

@@ -719,19 +719,21 @@ class RealEstate10KPose(Dataset):
 
         if total_frames < self.sample_n_frames * current_sample_stride:
             maximum_sample_stride = int(total_frames // self.sample_n_frames)
-            current_sample_stride = random.randint(self.minimum_sample_stride, maximum_sample_stride)
+            # current_sample_stride = random.randint(self.minimum_sample_stride, maximum_sample_stride)
+            current_sample_stride = maximum_sample_stride
 
         cropped_length = self.sample_n_frames * current_sample_stride
-        start_frame_ind = random.randint(0, max(0, total_frames - cropped_length - 1))
+        # start_frame_ind = random.randint(0, max(0, total_frames - cropped_length - 1))
+        start_frame_ind = max(0, total_frames - cropped_length - 1)
         end_frame_ind = min(start_frame_ind + cropped_length, total_frames)
 
         assert end_frame_ind - start_frame_ind >= self.sample_n_frames
         # frame_indices = np.linspace(start_frame_ind, end_frame_ind - 1, self.sample_n_frames, dtype=int)
         frame_indices = np.linspace(start_frame_ind, end_frame_ind - 1, self.sample_n_frames, dtype=int)
 
-        if self.shuffle_frames:
-            perm = np.random.permutation(self.sample_n_frames)
-            frame_indices = frame_indices[perm]
+        # if self.shuffle_frames:
+        #     perm = np.random.permutation(self.sample_n_frames)
+        #     frame_indices = frame_indices[perm]
 
         pixel_values = torch.from_numpy(video_reader.get_batch(frame_indices).numpy()).permute(0, 3, 1, 2).contiguous()
         pixel_values = pixel_values / 255.
