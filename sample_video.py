@@ -53,12 +53,18 @@ def get_batch(keys, value_dict, N: Union[List, ListConfig], T=None, device="cuda
     batch = {}
     batch_uc = {}
 
+    print(f"???get_batch keys: {keys}")
+
     for key in keys:
         if key == "txt":
             batch["txt"] = np.repeat([value_dict["prompt"]], repeats=math.prod(N)).reshape(N).tolist()
             batch_uc["txt"] = np.repeat([value_dict["negative_prompt"]], repeats=math.prod(N)).reshape(N).tolist()
         # elif key == "plucker_embedding":
         #     batch["plucker_embedding"] = value_dict["plucker_embedding"]
+        elif key == 'plucker_embedding':
+            print(f"plucker_embedding: c and uc")
+            batch['plucker_embedding'] = value_dict['plucker_embedding']
+            batch_uc['plucker_embedding'] = torch.zeros_like(value_dict['plucker_embedding'])
         else:
             batch[key] = value_dict[key]
 
@@ -196,6 +202,7 @@ def sampling_main(args, model_cls):
                 "plucker_embedding": plucker_embedding,
             }
 
+            print("preparing conditioning")
             batch, batch_uc = get_batch(
                 get_unique_embedder_keys_from_conditioner(model.conditioner), value_dict, num_samples
             )
