@@ -56,12 +56,18 @@ def get_batch(keys, value_dict, N: Union[List, ListConfig], T=None, device="cuda
     batch = {}
     batch_uc = {}
 
+    print(f"???get_batch keys: {keys}")
+
     for key in keys:
         if key == "txt":
             batch["txt"] = np.repeat([value_dict["prompt"]], repeats=math.prod(N)).reshape(N).tolist()
             batch_uc["txt"] = np.repeat([value_dict["negative_prompt"]], repeats=math.prod(N)).reshape(N).tolist()
         # elif key == "plucker_embedding":
         #     batch["plucker_embedding"] = value_dict["plucker_embedding"]
+        elif key == 'plucker_embedding':
+            print(f"plucker_embedding: c and uc")
+            batch['plucker_embedding'] = value_dict['plucker_embedding']
+            batch_uc['plucker_embedding'] = torch.zeros_like(value_dict['plucker_embedding'])
         else:
             batch[key] = value_dict[key]
 
@@ -72,7 +78,6 @@ def get_batch(keys, value_dict, N: Union[List, ListConfig], T=None, device="cuda
         if key not in batch_uc and isinstance(batch[key], torch.Tensor):
             batch_uc[key] = torch.clone(batch[key])
     return batch, batch_uc
-
 
 def save_video_as_grid_and_mp4(video_batch: torch.Tensor, save_path: str, fps: int = 5, args=None, key=None):
     os.makedirs(save_path, exist_ok=True)
@@ -119,6 +124,25 @@ def resize_for_rectangle_crop(arr, image_size, reshape_mode="random"):
     arr = TT.functional.crop(arr, top=top, left=left, height=image_size[0], width=image_size[1])
     return arr
 
+def get_relative_pose(cam_params):
+    abs_w2cs = [cam_param.w2c_mat for cam_param in cam_params]
+    abs_c2ws = [cam_param.c2w_mat for cam_param in cam_params]
+    source_cam_c2w = abs_c2ws[0]
+    # if self.zero_t_first_frame:
+    if False:
+        cam_to_origin = 0
+    else:
+        cam_to_origin = np.linalg.norm(source_cam_c2w[:3, 3])
+    target_cam_c2w = np.array([
+        [1, 0, 0, 0],
+        [0, 1, 0, -cam_to_origin],
+        [0, 0, 1, 0],
+        [0, 0, 0, 1]
+    ])
+    abs2rel = target_cam_c2w @ abs_w2cs[0]
+    ret_poses = [target_cam_c2w, ] + [abs2rel @ abs_c2w for abs_c2w in abs_c2ws[1:]]
+    ret_poses = np.array(ret_poses, dtype=np.float32)
+    return ret_poses
 
 def evaluating_main(args, model_cls):
     if isinstance(model_cls, type):
@@ -192,7 +216,11 @@ def evaluating_main(args, model_cls):
                                     cam_param.cy * image_size[0]]
                                     for cam_param in cam_params], dtype=np.float32)
             intrinsics = torch.as_tensor(intrinsics)[None]                  # [1, n_frame, 4]
-            c2w_poses = np.array([cam_param.c2w_mat for cam_param in cam_params], dtype=np.float32)
+            if args.relative_pose:
+                c2w_poses = get_relative_pose(cam_params)
+            else:
+                c2w_poses = np.array([cam_param.c2w_mat for cam_param in cam_params], dtype=np.float32)
+            # c2w_poses = np.array([cam_param.c2w_mat for cam_param in cam_params], dtype=np.float32)
             c2w = torch.as_tensor(c2w_poses)[None]                          # [1, n_frame, 4, 4]
             flip_flag = torch.zeros((T - 1) * 4 + 1, dtype=torch.bool, device=c2w.device)
             plucker_embedding = ray_condition(intrinsics, c2w, image_size[0], image_size[1], device='cpu',
@@ -277,10 +305,13 @@ def evaluating_main(args, model_cls):
                 ground_truth = [resize_for_rectangle_crop(TT.ToTensor()(Image.fromarray(frame)).unsqueeze(0), image_size, reshape_mode="center") for frame in ground_truth] # (f, c, h, w)
                 ground_truth = torch.stack(ground_truth, dim=0).to(torch.float32).unsqueeze(0) # (1, f, c, h, w)
 
+                samples_t = (samples * 255).to(torch.uint8)
+                ground_truth_t = (ground_truth * 255).to(torch.uint8)
                 frame_num = (T - 1) * 4 + 1
                 psnr = 0
                 for i in range(frame_num):
-                    psnr += cv2.PSNR(samples[0, i].numpy(), ground_truth[0, i].numpy())
+                    psnr += cv2.PSNR(samples_t[0, i].numpy(), ground_truth_t[0, i].numpy())
+                    print(f" PSNR: {i}: {cv2.PSNR(samples_t[0, i].numpy(), ground_truth_t[0, i].numpy())}")
                 psnr /= frame_num
 
                 # psnr = 0
@@ -296,6 +327,12 @@ def evaluating_main(args, model_cls):
                 if mpu.get_model_parallel_rank() == 0:
                     save_video_as_grid_and_mp4(samples, save_path, fps=args.sampling_fps)
 
+                # save ground truth
+                save_path = os.path.join(
+                    args.output_dir, "evaluation_" + str(cnt) + "_" + text.replace(" ", "_").replace("/", "")[:120], str(index) + "_gt"
+                )
+                if mpu.get_model_parallel_rank() == 0:
+                    save_video_as_grid_and_mp4(ground_truth, save_path, fps=args.sampling_fps)
 
 
 if __name__ == "__main__":

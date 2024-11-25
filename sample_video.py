@@ -53,12 +53,18 @@ def get_batch(keys, value_dict, N: Union[List, ListConfig], T=None, device="cuda
     batch = {}
     batch_uc = {}
 
+    print(f"???get_batch keys: {keys}")
+
     for key in keys:
         if key == "txt":
             batch["txt"] = np.repeat([value_dict["prompt"]], repeats=math.prod(N)).reshape(N).tolist()
             batch_uc["txt"] = np.repeat([value_dict["negative_prompt"]], repeats=math.prod(N)).reshape(N).tolist()
         # elif key == "plucker_embedding":
         #     batch["plucker_embedding"] = value_dict["plucker_embedding"]
+        elif key == 'plucker_embedding':
+            print(f"plucker_embedding: c and uc")
+            batch['plucker_embedding'] = value_dict['plucker_embedding']
+            batch_uc['plucker_embedding'] = torch.zeros_like(value_dict['plucker_embedding'])
         else:
             batch[key] = value_dict[key]
 
@@ -116,6 +122,25 @@ def resize_for_rectangle_crop(arr, image_size, reshape_mode="random"):
     arr = TT.functional.crop(arr, top=top, left=left, height=image_size[0], width=image_size[1])
     return arr
 
+def get_relative_pose(cam_params):
+    abs_w2cs = [cam_param.w2c_mat for cam_param in cam_params]
+    abs_c2ws = [cam_param.c2w_mat for cam_param in cam_params]
+    source_cam_c2w = abs_c2ws[0]
+    # if self.zero_t_first_frame:
+    if False:
+        cam_to_origin = 0
+    else:
+        cam_to_origin = np.linalg.norm(source_cam_c2w[:3, 3])
+    target_cam_c2w = np.array([
+        [1, 0, 0, 0],
+        [0, 1, 0, -cam_to_origin],
+        [0, 0, 1, 0],
+        [0, 0, 0, 1]
+    ])
+    abs2rel = target_cam_c2w @ abs_w2cs[0]
+    ret_poses = [target_cam_c2w, ] + [abs2rel @ abs_c2w for abs_c2w in abs_c2ws[1:]]
+    ret_poses = np.array(ret_poses, dtype=np.float32)
+    return ret_poses
 
 def sampling_main(args, model_cls):
     if isinstance(model_cls, type):
@@ -171,6 +196,10 @@ def sampling_main(args, model_cls):
             poses = [pose.strip().split(' ') for pose in poses[1:]]
             cam_params = [[float(x) for x in pose] for pose in poses]
 
+            # cam_count = (T - 1) * 4 + 1
+            # cam_stride = len(cam_params) // cam_count
+            # cam_params = cam_params[::cam_stride]
+            # cam_params = cam_params[:cam_count]
             # cam_params = cam_params[:T]
             cam_params = cam_params[0: ((T - 1) * 4 + 1) * 3: 3] 
             # cam_params = [cam_params[0]] + cam_params[-((T - 1) * 4 + 1) + 1:] 
@@ -183,7 +212,11 @@ def sampling_main(args, model_cls):
                                     cam_param.cy * image_size[0]]
                                     for cam_param in cam_params], dtype=np.float32)
             intrinsics = torch.as_tensor(intrinsics)[None]                  # [1, n_frame, 4]
-            c2w_poses = np.array([cam_param.c2w_mat for cam_param in cam_params], dtype=np.float32)
+            if args.relative_pose:
+                c2w_poses = get_relative_pose(cam_params)
+            else:
+                c2w_poses = np.array([cam_param.c2w_mat for cam_param in cam_params], dtype=np.float32)
+            # c2w_poses = np.array([cam_param.c2w_mat for cam_param in cam_params], dtype=np.float32)
             c2w = torch.as_tensor(c2w_poses)[None]                          # [1, n_frame, 4, 4]
             flip_flag = torch.zeros((T - 1) * 4 + 1, dtype=torch.bool, device=c2w.device)
             plucker_embedding = ray_condition(intrinsics, c2w, image_size[0], image_size[1], device='cpu',
@@ -193,9 +226,10 @@ def sampling_main(args, model_cls):
                 "prompt": text,
                 "negative_prompt": "",
                 "num_frames": torch.tensor(T).unsqueeze(0),
-                "plucker_embedding": plucker_embedding,
+                "plucker_embedding": plucker_embedding.to(device),
             }
 
+            print("preparing conditioning")
             batch, batch_uc = get_batch(
                 get_unique_embedder_keys_from_conditioner(model.conditioner), value_dict, num_samples
             )
