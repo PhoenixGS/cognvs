@@ -133,7 +133,7 @@ class CMGDynamicCFG:
             )
         )
     
-    def __call__(self, x, sigma, step_index):
+    def __call__(self, x, sigma, step_index, scale=None):
         x_00, x_0t, x_ct = x.chunk(3)
         scale_t = self.scale_t_schedule(sigma, step_index.item())
         scale_c = self.scale_c_schedule(sigma, step_index.item())
@@ -154,10 +154,18 @@ class CMGDynamicCFG:
             if k in ["vector", "crossattn", "concat"]:
                 c_out[k] = torch.cat((uc[k], c[k], c[k]), 0)
             elif k == 'pl_emb':
-                c_out[k] = torch.cat((uc[k], uc[k], c[k]), 0)
+                if c[k].dim() == 5 and uc[k].dim() == 5:
+                    c_out[k] = torch.cat((uc[k], uc[k], c[k]), 0)
+                elif c[k].dim() == 4 and uc[k].dim() == 4:
+                    c_out[k] = torch.cat((uc[k].unsqueeze(0), uc[k].unsqueeze(0), c[k].unsqueeze(0)), 0)
+                else:
+                    raise ValueError(f"Invalid dimension for pl_emb: {c[k].dim()}, {uc[k].dim()}")
             else:
                 assert c[k] == uc[k]
                 c_out[k] = c[k]
+        for k in c_out:
+            print(k, c_out[k].shape)
+        print(f"??? {torch.cat([x] * 3).shape}")
         return torch.cat([x] * 3), torch.cat([s] * 3), c_out
 
 class IdentityGuider:
