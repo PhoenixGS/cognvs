@@ -34,7 +34,10 @@ def step_two(origin):
 
         frames = transforms["frames"]
         
+        print(f"? {uid} {len(frames)}")
         for idx, i in enumerate(range(0, len(frames), 98)):
+            if i + 98 > len(frames):
+                break
             dat = {
                 "clip_name": f"{uid}_{idx}",
                 "video_name": uid,
