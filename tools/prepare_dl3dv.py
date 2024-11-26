@@ -34,7 +34,7 @@ def step_two(origin):
 
         frames = transforms["frames"]
         
-        for idx, i in enumerate(range(0, len(frames), 96)):
+        for idx, i in enumerate(range(0, len(frames), 98)):
             dat = {
                 "clip_name": f"{uid}_{idx}",
                 "video_name": uid,
@@ -43,7 +43,7 @@ def step_two(origin):
                 "root_path": path,
                 "pose_file": os.path.join(path, "transforms.json"),
             }
-            for j in range(i, i+96, 2):
+            for j in range(i, i+98, 2):
                 dat["frame_idx"].append(j)
             data.append(dat)
     return data
