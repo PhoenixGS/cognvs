@@ -153,14 +153,23 @@ class SATVideoDiffusionEngine(nn.Module):
             image = self.add_noise_to_first_frame(image)
             image = self.encode_first_stage(image, batch)
 
+            image_2 = x[:, :, -1:]
+            image_2 = self.add_noise_to_first_frame(image_2)
+            image_2 = self.encode_first_stage(image_2, batch)
+
         x = self.encode_first_stage(x, batch)
         x = x.permute(0, 2, 1, 3, 4).contiguous()
         if self.noised_image_input:
             image = image.permute(0, 2, 1, 3, 4).contiguous()
+            image_2 = image_2.permute(0, 2, 1, 3, 4).contiguous()
             if self.noised_image_all_concat:
                 image = image.repeat(1, x.shape[1], 1, 1, 1)
+                assert False
             else:
-                image = torch.concat([image, torch.zeros_like(x[:, 1:])], dim=1)
+                # image = torch.concat([image, torch.zeros_like(x[:, 1:])], dim=1)
+                # print(f"shapes {image.shape} {torch.zeros_like(x[:, 1:-1]).shape} {image_2.shape}")
+                image = torch.concat([image, torch.zeros_like(x[:, 1:-1]), image_2], dim=1)
+                assert image.shape == x.shape
             if random.random() < self.noised_image_dropout:
                 image = torch.zeros_like(image)
             batch["concat_images"] = image

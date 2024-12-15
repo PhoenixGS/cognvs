@@ -95,28 +95,29 @@ class PL_ImagePatchEmbeddingMixin(BaseMixin):
         
 
         pl_emb = kwargs.get("pl_emb", None)
-        print(f"?shape of pl_emb: {pl_emb.shape}")
-        assert pl_emb is not None, "pl_emb must be provided"
-        assert pl_emb.dim() == 4 or pl_emb.dim() == 5, "pl_emb must be 4d or 5d tensor"
-        if pl_emb.dim() == 5:
-            pl_emb = rearrange(pl_emb, "b f c h w -> b c f h w")
-            # B, C=6, F, H, W
-            B,C,_,H,W = pl_emb.shape
-            pl_emb = torch.concat([torch.zeros(B, C, 3, H, W).to(torch.bfloat16).to(pl_emb.device), pl_emb], dim=2) # TODO: respect CogVideoX
-            pl_emb = self.pl_proj(pl_emb)
-            # B, C', F/4, H/8, W/8
-            pl_emb = rearrange(pl_emb, "b c f h w -> (b f) c h w")
-        else:
-            pl_emb = rearrange(pl_emb, "f c h w -> c f h w")
-            C, _, H, W = pl_emb.shape
-            pl_emb = torch.concat([torch.zeros(C, 3, H, W).to(torch.bfloat16).to(pl_emb.device), pl_emb], dim=1)
-            pl_emb = self.pl_proj(pl_emb)
-            pl_emb = torch.concat([torch.zeros_like(pl_emb), pl_emb], dim=1)
-            pl_emb = rearrange(pl_emb, "c f h w -> f c h w")
-        
-        print(f"?emb shape: {emb.shape}, pl_emb shape: {pl_emb.shape}")
-        assert emb.shape == pl_emb.shape, "image and pl emb must have the same shape"
-        emb = emb + pl_emb
+        if pl_emb is not None:
+            print(f"?shape of pl_emb: {pl_emb.shape}")
+            # assert pl_emb is not None, "pl_emb must be provided"
+            assert pl_emb.dim() == 4 or pl_emb.dim() == 5, "pl_emb must be 4d or 5d tensor"
+            if pl_emb.dim() == 5:
+                pl_emb = rearrange(pl_emb, "b f c h w -> b c f h w")
+                # B, C=6, F, H, W
+                B,C,_,H,W = pl_emb.shape
+                pl_emb = torch.concat([torch.zeros(B, C, 3, H, W).to(torch.bfloat16).to(pl_emb.device), pl_emb], dim=2) # TODO: respect CogVideoX
+                pl_emb = self.pl_proj(pl_emb)
+                # B, C', F/4, H/8, W/8
+                pl_emb = rearrange(pl_emb, "b c f h w -> (b f) c h w")
+            else:
+                pl_emb = rearrange(pl_emb, "f c h w -> c f h w")
+                C, _, H, W = pl_emb.shape
+                pl_emb = torch.concat([torch.zeros(C, 3, H, W).to(torch.bfloat16).to(pl_emb.device), pl_emb], dim=1)
+                pl_emb = self.pl_proj(pl_emb)
+                pl_emb = torch.concat([torch.zeros_like(pl_emb), pl_emb], dim=1)
+                pl_emb = rearrange(pl_emb, "c f h w -> f c h w")
+            
+            print(f"?emb shape: {emb.shape}, pl_emb shape: {pl_emb.shape}")
+            assert emb.shape == pl_emb.shape, "image and pl emb must have the same shape"
+            emb = emb + pl_emb
 
         emb = emb.view(B, T, *emb.shape[1:])
         emb = emb.flatten(3).transpose(2, 3)  # (b,t,n,d)
@@ -153,12 +154,15 @@ class PL_PositionEmbeddingMixin(BaseMixin):
         attention_forward_default = HOOKS_DEFAULT["attention_forward"]
         
         pl_embed = kw_args.get("pl_emb", None)
-        B, N, D = hidden_states.shape
-        B2, N2, D2 = pl_embed.shape
-        assert B == B2, "batch size must be the same"
-        assert D == D2, "number of patches must be the same"
-        assert N >= N2, "number of patches must be larger than that of pl_embed"
-        hidden_states = hidden_states + torch.cat([ torch.zeros(B, N-N2, D).to(hidden_states.device, dtype=pl_embed.dtype), pl_embed], dim=1)
+        if pl_embed is not None:
+            B, N, D = hidden_states.shape
+            B2, N2, D2 = pl_embed.shape
+            assert B == B2, "batch size must be the same"
+            assert D == D2, "number of patches must be the same"
+            assert N >= N2, "number of patches must be larger than that of pl_embed"
+            hidden_states = hidden_states + torch.cat([ torch.zeros(B, N-N2, D).to(hidden_states.device, dtype=pl_embed.dtype), pl_embed], dim=1)
+        else:
+            pass
 
         return attention_forward_default(self, hidden_states, mask, **kw_args)
 
@@ -1039,22 +1043,25 @@ class PLNRMLPDiffusionTransformer(DiffusionTransformer):
 
     def forward(self,x, timesteps=None, context=None, y=None,**kwargs):
         pl_embed = kwargs.get("pl_emb", None)
-        assert pl_embed is not None, "pl_emb must be provided"
-        # print(f"?shape of pl_embed: {pl_embed.shape}")
-        if pl_embed.dim() == 4:
-            pl_embed = pl_embed.unsqueeze(0)
-        assert pl_embed.dim() == 5, "pl_emb must be 5d tensor"
-        pl_embed = pl_embed.transpose(1, 2)
+        if pl_embed is not None:
+            # assert pl_embed is not None, "pl_emb must be provided"
+            # print(f"?shape of pl_embed: {pl_embed.shape}")
+            if pl_embed.dim() == 4:
+                pl_embed = pl_embed.unsqueeze(0)
+            assert pl_embed.dim() == 5, "pl_emb must be 5d tensor"
+            pl_embed = pl_embed.transpose(1, 2)
 
-        pl_embed = self.pl_proj(pl_embed)
-        pl_embed = rearrange(pl_embed, "b c f h w -> b (f h w) c ")
-        pl_embed = self.pl_mlp(pl_embed)
-        # print max and min of pl_embed
-        # print(f"max of pl_embed: {pl_embed.max()}")
-        # print(f"min of pl_embed: {pl_embed.min()}")
-        # print max and min of x
-        # print(f"max of x: {x.max()}")
-        # print(f"min of x: {x.min()}")
-        # pl_embed = rearrange(pl_embed, "b c f h w -> b (f h w) c ")
-        kwargs["pl_emb"] = pl_embed
+            pl_embed = self.pl_proj(pl_embed)
+            pl_embed = rearrange(pl_embed, "b c f h w -> b (f h w) c ")
+            pl_embed = self.pl_mlp(pl_embed)
+            # print max and min of pl_embed
+            # print(f"max of pl_embed: {pl_embed.max()}")
+            # print(f"min of pl_embed: {pl_embed.min()}")
+            # print max and min of x
+            # print(f"max of x: {x.max()}")
+            # print(f"min of x: {x.min()}")
+            # pl_embed = rearrange(pl_embed, "b c f h w -> b (f h w) c ")
+            kwargs["pl_emb"] = pl_embed
+        else:
+            pass
         return super().forward(x, timesteps, context, y,**kwargs)

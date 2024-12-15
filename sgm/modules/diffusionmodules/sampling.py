@@ -475,8 +475,99 @@ class SdeditEDMSampler(EulerEDMSampler):
 
         return x
 
-
 class VideoDDIMSampler(BaseDiffusionSampler):
+    def __init__(self, fixed_frames=0, sdedit=False, **kwargs):
+        super().__init__(**kwargs)
+        self.fixed_frames = fixed_frames
+        self.sdedit = sdedit
+
+    def prepare_sampling_loop(self, x, cond, uc=None, num_steps=None):
+        alpha_cumprod_sqrt, timesteps = self.discretization(
+            self.num_steps if num_steps is None else num_steps,
+            device=self.device,
+            return_idx=True,
+            do_append_zero=False,
+        )
+        alpha_cumprod_sqrt = torch.cat([alpha_cumprod_sqrt, alpha_cumprod_sqrt.new_ones([1])])
+        timesteps = torch.cat([torch.tensor(list(timesteps)).new_zeros([1]) - 1, torch.tensor(list(timesteps))])
+
+        uc = default(uc, cond)
+
+        num_sigmas = len(alpha_cumprod_sqrt)
+
+        s_in = x.new_ones([x.shape[0]])
+
+        return x, s_in, alpha_cumprod_sqrt, num_sigmas, cond, uc, timesteps
+
+    def denoise(self, x, denoiser, alpha_cumprod_sqrt, cond, uc, timestep=None, idx=None, scale=None, scale_emb=None):
+        additional_model_inputs = {}
+
+        if 'pl_emb' in cond.keys():
+                print(f"?sampler cond pl_emb shape {cond['pl_emb'].shape}")
+                print(f"? sampler x shape {x.shape}")
+        if isinstance(scale, torch.Tensor) == False and scale == 1:
+            additional_model_inputs["idx"] = x.new_ones([x.shape[0]]) * timestep
+            if scale_emb is not None:
+                additional_model_inputs["scale_emb"] = scale_emb
+            denoised = denoiser(x, alpha_cumprod_sqrt, cond, **additional_model_inputs).to(torch.float32)
+        else:
+            additional_model_inputs["idx"] = torch.cat([x.new_ones([x.shape[0]]) * timestep] * 2)
+            denoised = denoiser(
+                *self.guider.prepare_inputs(x, alpha_cumprod_sqrt, cond, uc), **additional_model_inputs
+            ).to(torch.float32)
+            if isinstance(self.guider, DynamicCFG):
+                denoised = self.guider(
+                    denoised, (1 - alpha_cumprod_sqrt**2) ** 0.5, step_index=self.num_steps - timestep, scale=scale
+                )
+            else:
+                denoised = self.guider(denoised, (1 - alpha_cumprod_sqrt**2) ** 0.5, scale=scale)
+        return denoised
+
+    def sampler_step(
+        self,
+        alpha_cumprod_sqrt,
+        next_alpha_cumprod_sqrt,
+        denoiser,
+        x,
+        cond,
+        uc=None,
+        idx=None,
+        timestep=None,
+        scale=None,
+        scale_emb=None,
+    ):
+        denoised = self.denoise(
+            x, denoiser, alpha_cumprod_sqrt, cond, uc, timestep, idx, scale=scale, scale_emb=scale_emb
+        ).to(torch.float32)
+
+        a_t = ((1 - next_alpha_cumprod_sqrt**2) / (1 - alpha_cumprod_sqrt**2)) ** 0.5
+        b_t = next_alpha_cumprod_sqrt - alpha_cumprod_sqrt * a_t
+
+        x = append_dims(a_t, x.ndim) * x + append_dims(b_t, x.ndim) * denoised
+        return x
+
+    def __call__(self, denoiser, x, cond, uc=None, num_steps=None, scale=None, scale_emb=None):
+        x, s_in, alpha_cumprod_sqrt, num_sigmas, cond, uc, timesteps = self.prepare_sampling_loop(
+            x, cond, uc, num_steps
+        )
+
+        for i in self.get_sigma_gen(num_sigmas):
+            x = self.sampler_step(
+                s_in * alpha_cumprod_sqrt[i],
+                s_in * alpha_cumprod_sqrt[i + 1],
+                denoiser,
+                x,
+                cond,
+                uc,
+                idx=self.num_steps - i,
+                timestep=timesteps[-(i + 1)],
+                scale=scale,
+                scale_emb=scale_emb,
+            )
+
+        return x
+
+class VideoDDIMCMGSampler(BaseDiffusionSampler):
     def __init__(self, fixed_frames=0, sdedit=False, **kwargs):
         super().__init__(**kwargs)
         self.fixed_frames = fixed_frames
