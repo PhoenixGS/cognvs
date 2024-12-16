@@ -192,7 +192,7 @@ def evaluating_main(args, model_cls):
                 image = model.encode_first_stage(image, None)
                 image = image.permute(0, 2, 1, 3, 4).contiguous()
 
-                image_2 = video_reader[-1].asnumpy()
+                image_2 = video_reader[((T - 1) * 4) * 2].asnumpy()
                 image_2 = Image.fromarray(image_2)
                 image_2 = transform(image_2).unsqueeze(0).to("cuda")
                 image_2 = resize_for_rectangle_crop(image_2, image_size, reshape_mode="center").unsqueeze(0)
@@ -219,7 +219,7 @@ def evaluating_main(args, model_cls):
             # cam_params = cam_params[:T]
             cam_params = cam_params[0: ((T - 1) * 4 + 1) * 2: 2] 
             # cam_params = [cam_params[0]] + cam_params[-((T - 1) * 4 + 1) + 1:] 
-            assert len(cam_params) == 49, f"len of cam_params: {len(cam_params)}"
+            # assert len(cam_params) == 49, f"len of cam_params: {len(cam_params)}"
 
             cam_params = [Camera(cam_param) for cam_param in cam_params]
             intrinsics = np.asarray([[cam_param.fx * image_size[1],
