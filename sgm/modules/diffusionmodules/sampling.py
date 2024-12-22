@@ -599,6 +599,7 @@ class VideoDDIMCMGSampler(BaseDiffusionSampler):
                 print(f"? sampler x shape {x.shape}")
         if isinstance(scale, torch.Tensor) == False and scale == 1:
             additional_model_inputs["idx"] = x.new_ones([x.shape[0]]) * timestep
+            additional_model_inputs["flg"] = x.new_ones([x.shape[0]], dtype=torch.bfloat16) * (timestep > 900)
             if 'pl_emb' in cond.keys():
                 pl_emb = cond["pl_emb"]
                 if pl_emb.dim() == 4:
@@ -613,6 +614,7 @@ class VideoDDIMCMGSampler(BaseDiffusionSampler):
             denoised = denoiser(x, alpha_cumprod_sqrt, cond, **additional_model_inputs).to(torch.float32)
         else:
             additional_model_inputs["idx"] = torch.cat([x.new_ones([x.shape[0]]) * timestep] * 3)
+            additional_model_inputs["flg"] = torch.cat([x.new_ones([x.shape[0]], dtype=torch.bfloat16) * (timestep > 900)] * 3)
             if 'pl_emb' in cond.keys():
                 pl_emb = cond["pl_emb"]
                 if pl_emb.dim() == 4:

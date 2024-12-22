@@ -77,6 +77,14 @@ class VideoDiffusionLoss(StandardDiffusionLoss):
 
         alphas_cumprod_sqrt, idx = self.sigma_sampler(input.shape[0], return_idx=True)
         alphas_cumprod_sqrt = alphas_cumprod_sqrt.to(input.device)
+        # idx is a 1-dim tensor
+        # want a new tensor flg with the same shape as idx
+        # idx[i] > 900, flg[i] = 1, else 0
+        # flg has no grad
+        flg = torch.zeros_like(idx)
+        flg[idx > 900] = 1
+        flg = flg.to(input.device)
+
         idx = idx.to(input.device)
 
         noise = torch.randn_like(input)
@@ -88,8 +96,10 @@ class VideoDiffusionLoss(StandardDiffusionLoss):
         torch.distributed.broadcast(idx, src=src, group=mpu.get_model_parallel_group())
         torch.distributed.broadcast(noise, src=src, group=mpu.get_model_parallel_group())
         torch.distributed.broadcast(alphas_cumprod_sqrt, src=src, group=mpu.get_model_parallel_group())
+        torch.distributed.broadcast(flg, src=src, group=mpu.get_model_parallel_group())
 
         additional_model_inputs["idx"] = idx
+        additional_model_inputs["flg"] = flg
 
         if self.offset_noise_level > 0.0:
             noise = (

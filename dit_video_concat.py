@@ -153,14 +153,34 @@ class PL_PositionEmbeddingMixin(BaseMixin):
     def attention_forward(self, hidden_states, mask, **kw_args):
         attention_forward_default = HOOKS_DEFAULT["attention_forward"]
         
+        # print(f"?kw_args in PL_PositionEmbeddingMixin: {kw_args.keys()}")
+        # print(f"?time_steps in PL_PositionEmbeddingMixin: {kw_args['time_steps']}")
         pl_embed = kw_args.get("pl_emb", None)
+        # kw_args["time_steps"] is a Tensor
+        # want no gradient copy for time_steps
+        # time_steps = kw_args["time_steps"]
+        # if pl_embed is not None and time_steps[0] > 900.0:
+        # if pl_embed is not None:
+        flg = kw_args.get("flg", None)
+        # print(f"?flg: {flg}")
         if pl_embed is not None:
             B, N, D = hidden_states.shape
             B2, N2, D2 = pl_embed.shape
             assert B == B2, "batch size must be the same"
             assert D == D2, "number of patches must be the same"
             assert N >= N2, "number of patches must be larger than that of pl_embed"
-            hidden_states = hidden_states + torch.cat([ torch.zeros(B, N-N2, D).to(hidden_states.device, dtype=pl_embed.dtype), pl_embed], dim=1)
+            plus_embed = torch.cat([torch.zeros(B, N-N2, D).to(hidden_states.device, dtype=pl_embed.dtype), pl_embed], dim=1)
+            # flg shape: (B)
+            # plus_embed shape: (B, N, D)
+            # flg[i] = 0: hidden_states[i] = hidden_states[i]
+            # flg[i] = 1: hidden_states[i] = hidden_states[i] + pl_embed[i]
+            # print(f"?shape of hidden_states: {hidden_states.shape}, shape of plus_embed: {plus_embed.shape}")
+            # print(f"?shape of flg: {flg.shape}")
+            # flg shape: (B)
+            # hidden_states shape: (B, N, D)
+            # hidden_states = hidden_states + flg.unsqueeze(-1) * plus_embed
+            hidden_states = hidden_states + flg.unsqueeze(-1).unsqueeze(-1) * plus_embed
+
         else:
             pass
 
@@ -1064,4 +1084,6 @@ class PLNRMLPDiffusionTransformer(DiffusionTransformer):
             kwargs["pl_emb"] = pl_embed
         else:
             pass
+        # kwargs["time_steps"] = timesteps.detach().cpu().numpy()
+        # print(f"?time steps: {timesteps}")
         return super().forward(x, timesteps, context, y,**kwargs)
